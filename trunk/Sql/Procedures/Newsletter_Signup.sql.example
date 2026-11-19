@@ -1,0 +1,52 @@
+IF  EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[Newsletter_Signup]') AND type IN (N'P', N'PC'))
+DROP PROCEDURE [dbo].[Newsletter_Signup]
+GO
+
+-- RETURN 0-added, 1-already added and confirmed, 3-already added but not confimed yet, 4-email is empty
+CREATE PROCEDURE [dbo].[Newsletter_Signup]
+	@name nvarchar(100),
+    @email varchar(255)
+AS
+BEGIN
+	if @email IS NULL OR @email = ''
+		RETURN 4
+
+	DECLARE @statusID AS int;
+	SELECT @statusID = statusID FROM Newsletter WHERE email = @email;
+	IF @statusID IS NOT NULL
+	BEGIN
+		IF @statusID = 2
+		BEGIN
+			UPDATE
+				Newsletter 
+			SET
+				statusID=3
+				, confirmCode=cast(newid() as varchar(255)) 
+				, unsubscribeCode=cast(newid() as varchar(255)) 
+			WHERE
+				email = @email;
+			RETURN 0;
+		END
+		IF @statusID = 1
+		BEGIN
+			UPDATE
+				Newsletter 
+			SET
+				statusID=3
+				, confirmCode=cast(newid() as varchar(255)) 
+				, unsubscribeCode=cast(newid() as varchar(255)) 
+			WHERE
+				email = @email;
+			RETURN 1;
+		END
+		RETURN 3;
+	END ELSE BEGIN
+		INSERT INTO Newsletter ([name], email) VALUES (@name, @email);
+		RETURN 0;
+	END
+		
+END
+GO
+
+
+

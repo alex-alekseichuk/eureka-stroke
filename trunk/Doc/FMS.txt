@@ -1,0 +1,31 @@
+
+FMS is another page(interface) to edit Format's definistions to be used by Parser.
+
+It's mostly like Fields mapping
+means we have our own database EurekaFormat with set of fields EurekaFields
+and the user has .csv data file but in his own AlienFormat
+so, FMS is used to map AlienFormat fields to our EurekaFields
+so, parser may parse user's data and insert into or eureka db
+main grid in FMS (top) is a list of EurekaFields in our DB
+
+When user choose one EurekaField there are 2 more grids open below
+    AlienFields and Values Mapping.
+
+Alien field(s) is the field of AlienFormat that we are going to map to specified Erureka Field
+There maybe several AlienField's mapped to the same EurekaField
+There is also optional Regexp can be used for preprocess the value extracted from user's data
+
+Another sub-grid is Values Mapping
+Values mapping used for special fields that has finite enumeration of values.
+For example, Sex: Male, Female
+For example, we have eureka field ESex with possible values: Male and Female
+and user has ASex alien field with values: M and F
+so, we need to provide mapping for that
+
+It's ok to have EurekaValue not mapped to empty (none) AlienValue
+in this case that EurekaValue just never be inserted by that AlienFormar.
+From other hand, some AlienValue may not be mapped to specified EurekaValue,
+in this case it will be inserted without mapping to specified EurekaValue
+
+User should be able to enter such (half-fill) records.
+I mean EurekaValue without AlienValue or AlienValue without EurekaValue.

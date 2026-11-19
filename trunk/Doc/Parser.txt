@@ -1,0 +1,73 @@
+
+Projects are involved into Parser environment:
+    Core
+    EurekaDataAccess
+    FormatService
+    Converter
+    Parser
+    WebApplication
+
+There are several types of Error:
+    None = 0,
+    MissingField = 1,
+    MissingFieldMapping = 2,
+    MissingValue = 3,
+    MissingValueMapping = 4,
+    Conversion = 5,
+    Validation = 6,
+    Other = 7
+
+And each Error type can be ignored or captured:
+    switch (errorType)
+    {
+        case EnumErrorType.None:
+        case EnumErrorType.Conversion:
+        case EnumErrorType.MissingValue:
+        case EnumErrorType.MissingValueMapping:
+        case EnumErrorType.Other:
+        case EnumErrorType.Validation:
+            type = EnumErrorProcessingType.Capture;
+            break;
+
+        case EnumErrorType.MissingField:
+        case EnumErrorType.MissingFieldMapping:
+            type = EnumErrorProcessingType.Ignore;
+            break;
+    }
+
+
+Each field value can be Create, Update or Delete
+
+Fields have type:
+    String = 0,
+    Integer = 1,
+    Boolean = 2,
+    Decimal = 3,
+    DateTime = 4,
+    SingleSelect = 5,
+    MultipleSelect = 6
+
+There are audit records.
+Each audit record has type:
+    StrokeValue = 0,
+    FieldName = 1,
+    FieldType = 2,
+    FieldMandatory = 3,
+    FieldRegularExpression = 4,
+    FieldMapping = 5,
+    FieldDescription = 6,
+
+    FieldValue = 10,
+    FieldValueDescription = 11,
+    FieldValueMapping = 12,
+    Format = 13,
+    Facility = 14
+
+
+Temporal overlap result:
+    Ignore = 0,
+    CheckKeyFields = 1,
+    NewRecord = 2
+
+
+

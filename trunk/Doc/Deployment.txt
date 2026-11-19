@@ -1,0 +1,79 @@
+
+You need to have installed:
+    SVN client (e.g., http://tortoisesvn.net/downloads)
+    MSSQL server 2005 (or later)
+    Visual Studio 2008 with C#
+    Local IIS server
+    
+
+
+1.
+
+Get the Source code:
+
+Go to the 
+http://code.google.com/p/eurekastroke/source/checkout
+
+Write down generated googlecode.com password 
+
+Choose a folder on your drive for local copy of the inventory
+
+Go to Windows Expolorer, select that folder,
+do right click and select "SVN checkout..." menu
+
+Use URL http://svn.example.com/svn/EurekaStroke/trunk/
+
+username: your gmail account
+password: <password from step before>
+
+
+2.
+
+Create MSSQL Database: EurekaStroke with SQL Login testuser:testpassword
+Use Sql\UpdateAll.cmd script to generate Sql\.UpdateAll.sql file.
+Run Sql\.UpdateAll.sql on EurekaStroke DB to create all objects.
+
+
+3.
+
+Create Web application under Local IIS.
+Points it to Web subfolder of the project.
+
+
+4.
+
+Provide changes in Web\Web.config:
+
+4.1. Set correct paths to logs in nlog section
+4.2. Provide correct connection string to you database in connectionStrings section
+4.3. Provide path to UploaderFolder in appSetting section. Make sure your IIS can write (upload) to that folder.
+4.4. Provide the name of EurekaFormat used in system:
+        <add name="EurekaFormatName" type="System.String" value="EurekaTest" />
+
+
+5.
+
+Provide change in Core\App.Config:
+
+5.1. Set correct connection string to your DB
+
+
+
+
+
+WebApplication Integration with main Eureka system.
+
+There is WebApplication project as a copy of Web (site) project.
+To add it as sub-folder to the existing main Eureka WebApplication:
+1. Copy WebApplication recursively to main Eureka WebApplication folder.
+2. Rename WebApplication subfolder to EurekaStroke.
+3. Add EurekaStroke.csproj project to main Eureka solution as Existing Project.
+4. Rename that project in solution to EurekaStroke.
+5. Rebuild the solution with new project.
+6. In IIS management console add WebApplication as child to main Eureka WebApplication; provide alias: EurekaStroke, that point to EurekaStore sub-folder.
+
+So, you will be able to access EurekaStroke WebApplication from main Eureka tree like:
+    http://localhost/TestWebSolution/EurekaStroke/FormatManager.aspx
+where http://localhost/TestWebSolution/ is root of main Eureka WebApplication.
+
+

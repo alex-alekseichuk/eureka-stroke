@@ -1,0 +1,103 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 10.00
+# Visual Studio 2008
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Parser", "Parser\Parser.csproj", "{71B3B7B2-511E-4C28-8052-B05FF2C6E027}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FormatService", "FormatService\FormatService.csproj", "{8158A3BF-7873-4335-9D59-6E8C34FF29D9}"
+	ProjectSection(ProjectDependencies) = postProject
+		{2F8F2E8A-C626-46A3-A708-F363DC137B46} = {2F8F2E8A-C626-46A3-A708-F363DC137B46}
+	EndProjectSection
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Core", "Core\Core.csproj", "{A6CBC5EA-E3ED-47E8-B9ED-2B4F485C27D9}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EurekaTest", "EurekaTest\EurekaTest.csproj", "{48DC30C3-1BC3-455F-9A93-5072CFF400B3}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{F6029222-9410-4090-AF6E-270C066D5ACD}"
+	ProjectSection(SolutionItems) = preProject
+		EurekaStroke.vsmdi = EurekaStroke.vsmdi
+		LocalTestRun.testrunconfig = LocalTestRun.testrunconfig
+	EndProjectSection
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "UploaderService", "UploaderService\UploaderService.csproj", "{AEFEE160-A376-4081-863F-A304FE29274F}"
+	ProjectSection(ProjectDependencies) = postProject
+		{8158A3BF-7873-4335-9D59-6E8C34FF29D9} = {8158A3BF-7873-4335-9D59-6E8C34FF29D9}
+	EndProjectSection
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EurekaDataAccess", "EurekaDataAccess\EurekaDataAccess.csproj", "{2F8F2E8A-C626-46A3-A708-F363DC137B46}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Converter", "Converter\Converter.csproj", "{6EAD8D49-EEAC-4AAC-A7F4-CA9044FD54F2}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PendingUploadsRunner", "PendingUploadsRunner\PendingUploadsRunner.csproj", "{1BA25778-94EA-480E-889D-53443D10528D}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ExcelDictionaryParser", "ExcelDictionaryParser\ExcelDictionaryParser.csproj", "{32F7510B-83DD-4F99-979E-37C04A23C903}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WebApplication", "WebApplication\WebApplication.csproj", "{E3DC9481-19AB-4928-8E71-57F20717206A}"
+	ProjectSection(ProjectDependencies) = postProject
+		{6EAD8D49-EEAC-4AAC-A7F4-CA9044FD54F2} = {6EAD8D49-EEAC-4AAC-A7F4-CA9044FD54F2}
+		{AEFEE160-A376-4081-863F-A304FE29274F} = {AEFEE160-A376-4081-863F-A304FE29274F}
+		{2F8F2E8A-C626-46A3-A708-F363DC137B46} = {2F8F2E8A-C626-46A3-A708-F363DC137B46}
+		{71B3B7B2-511E-4C28-8052-B05FF2C6E027} = {71B3B7B2-511E-4C28-8052-B05FF2C6E027}
+		{8158A3BF-7873-4335-9D59-6E8C34FF29D9} = {8158A3BF-7873-4335-9D59-6E8C34FF29D9}
+		{A6CBC5EA-E3ED-47E8-B9ED-2B4F485C27D9} = {A6CBC5EA-E3ED-47E8-B9ED-2B4F485C27D9}
+	EndProjectSection
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ReportService", "ReportService\ReportService.csproj", "{6C248656-C463-4D34-8962-78FA705D23A3}"
+EndProject
+Global
+	GlobalSection(TestCaseManagementSettings) = postSolution
+		CategoryFile = EurekaStroke.vsmdi
+	EndGlobalSection
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{71B3B7B2-511E-4C28-8052-B05FF2C6E027}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{71B3B7B2-511E-4C28-8052-B05FF2C6E027}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{71B3B7B2-511E-4C28-8052-B05FF2C6E027}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{71B3B7B2-511E-4C28-8052-B05FF2C6E027}.Release|Any CPU.Build.0 = Release|Any CPU
+		{8158A3BF-7873-4335-9D59-6E8C34FF29D9}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8158A3BF-7873-4335-9D59-6E8C34FF29D9}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8158A3BF-7873-4335-9D59-6E8C34FF29D9}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8158A3BF-7873-4335-9D59-6E8C34FF29D9}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A6CBC5EA-E3ED-47E8-B9ED-2B4F485C27D9}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A6CBC5EA-E3ED-47E8-B9ED-2B4F485C27D9}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A6CBC5EA-E3ED-47E8-B9ED-2B4F485C27D9}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A6CBC5EA-E3ED-47E8-B9ED-2B4F485C27D9}.Release|Any CPU.Build.0 = Release|Any CPU
+		{48DC30C3-1BC3-455F-9A93-5072CFF400B3}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{48DC30C3-1BC3-455F-9A93-5072CFF400B3}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{48DC30C3-1BC3-455F-9A93-5072CFF400B3}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{48DC30C3-1BC3-455F-9A93-5072CFF400B3}.Release|Any CPU.Build.0 = Release|Any CPU
+		{AEFEE160-A376-4081-863F-A304FE29274F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{AEFEE160-A376-4081-863F-A304FE29274F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{AEFEE160-A376-4081-863F-A304FE29274F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{AEFEE160-A376-4081-863F-A304FE29274F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{2F8F2E8A-C626-46A3-A708-F363DC137B46}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2F8F2E8A-C626-46A3-A708-F363DC137B46}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2F8F2E8A-C626-46A3-A708-F363DC137B46}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2F8F2E8A-C626-46A3-A708-F363DC137B46}.Release|Any CPU.Build.0 = Release|Any CPU
+		{6EAD8D49-EEAC-4AAC-A7F4-CA9044FD54F2}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{6EAD8D49-EEAC-4AAC-A7F4-CA9044FD54F2}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{6EAD8D49-EEAC-4AAC-A7F4-CA9044FD54F2}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{6EAD8D49-EEAC-4AAC-A7F4-CA9044FD54F2}.Release|Any CPU.Build.0 = Release|Any CPU
+		{1BA25778-94EA-480E-889D-53443D10528D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1BA25778-94EA-480E-889D-53443D10528D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1BA25778-94EA-480E-889D-53443D10528D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1BA25778-94EA-480E-889D-53443D10528D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{32F7510B-83DD-4F99-979E-37C04A23C903}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{32F7510B-83DD-4F99-979E-37C04A23C903}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{32F7510B-83DD-4F99-979E-37C04A23C903}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{32F7510B-83DD-4F99-979E-37C04A23C903}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E3DC9481-19AB-4928-8E71-57F20717206A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E3DC9481-19AB-4928-8E71-57F20717206A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E3DC9481-19AB-4928-8E71-57F20717206A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E3DC9481-19AB-4928-8E71-57F20717206A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{6C248656-C463-4D34-8962-78FA705D23A3}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{6C248656-C463-4D34-8962-78FA705D23A3}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{6C248656-C463-4D34-8962-78FA705D23A3}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{6C248656-C463-4D34-8962-78FA705D23A3}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal

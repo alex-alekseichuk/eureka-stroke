@@ -1,0 +1,13 @@
+Index: Web.config
+===================================================================
+--- Web.config	(revision 161)
++++ Web.config	(revision 162)
+@@ -58,7 +58,7 @@
+ 		</containers>
+ 	</unity>
+ 	<connectionStrings>
+-		<add name="EurekaStrokeEntities" connectionString="metadata=res://*/EurekaStroke.csdl|res://*/EurekaStroke.ssdl|res://*/EurekaStroke.msl;provider=System.Data.SqlClient;provider connection string=&quot;Data Source=localhost;Initial Catalog=EurekaStroke;Persist Security Info=True;User ID=testuser;Password=testpassword;MultipleActiveResultSets=True&quot;" providerName="System.Data.EntityClient"/>
++		<add name="EurekaStrokeEntities" connectionString="metadata=res://*/EurekaStroke.csdl|res://*/EurekaStroke.ssdl|res://*/EurekaStroke.msl;provider=System.Data.SqlClient;provider connection string=&quot;Data Source=.\SQLEXPRESS;Initial Catalog=EurekaStroke;Persist Security Info=True;User ID=testuser;Password=testpassword;MultipleActiveResultSets=True&quot;" providerName="System.Data.EntityClient"/>
+ 	</connectionStrings>
+ 	<appSettings>
+ 		<add key="UploaderFolder" value="D:\Projects\med\EurekaStroke\trunk\Upload"></add>

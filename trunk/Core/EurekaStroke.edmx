@@ -1,0 +1,1628 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<edmx:Edmx Version="1.0" xmlns:edmx="http://schemas.microsoft.com/ado/2007/06/edmx">
+  <!-- EF Runtime content -->
+  <edmx:Runtime>
+    <!-- SSDL content -->
+    <edmx:StorageModels>
+      <Schema Namespace="Eureka.Stroke.EurekaStrokeEntities.Store" Alias="Self" Provider="System.Data.SqlClient" ProviderManifestToken="2008" xmlns:store="http://schemas.microsoft.com/ado/2007/12/edm/EntityStoreSchemaGenerator" xmlns="http://schemas.microsoft.com/ado/2006/04/edm/ssdl">
+        <EntityContainer Name="EurekaStrokeEurekaStrokeEntitiesStoreContainer">
+          <EntitySet Name="AlienField" EntityType="Eureka.Stroke.EurekaStrokeEntities.Store.AlienField" store:Type="Tables" Schema="dbo" />
+          <EntitySet Name="AlienValue" EntityType="Eureka.Stroke.EurekaStrokeEntities.Store.AlienValue" store:Type="Tables" Schema="dbo" />
+          <EntitySet Name="AuditLog" EntityType="Eureka.Stroke.EurekaStrokeEntities.Store.AuditLog" store:Type="Tables" Schema="dbo" />
+          <EntitySet Name="BusinessRuleCheckResults" EntityType="Eureka.Stroke.EurekaStrokeEntities.Store.BusinessRuleCheckResults" store:Type="Tables" Schema="dbo" />
+          <EntitySet Name="EurekaField" EntityType="Eureka.Stroke.EurekaStrokeEntities.Store.EurekaField" store:Type="Tables" Schema="dbo" />
+          <EntitySet Name="EurekaValue" EntityType="Eureka.Stroke.EurekaStrokeEntities.Store.EurekaValue" store:Type="Tables" Schema="dbo" />
+          <EntitySet Name="Facility" EntityType="Eureka.Stroke.EurekaStrokeEntities.Store.Facility" store:Type="Tables" Schema="dbo" />
+          <EntitySet Name="Folder" EntityType="Eureka.Stroke.EurekaStrokeEntities.Store.Folder" store:Type="Tables" Schema="dbo" />
+          <EntitySet Name="Format" EntityType="Eureka.Stroke.EurekaStrokeEntities.Store.Format" store:Type="Tables" Schema="dbo" />
+          <EntitySet Name="KeyEurekaField" EntityType="Eureka.Stroke.EurekaStrokeEntities.Store.KeyEurekaField" store:Type="Tables" Schema="dbo" />
+          <EntitySet Name="Report" EntityType="Eureka.Stroke.EurekaStrokeEntities.Store.Report" store:Type="Tables" Schema="dbo" />
+          <EntitySet Name="StrokeData" EntityType="Eureka.Stroke.EurekaStrokeEntities.Store.StrokeData" store:Type="Tables" Schema="dbo" />
+          <EntitySet Name="StrokeFieldValue" EntityType="Eureka.Stroke.EurekaStrokeEntities.Store.StrokeFieldValue" store:Type="Tables" Schema="dbo" />
+          <EntitySet Name="UploadLog" EntityType="Eureka.Stroke.EurekaStrokeEntities.Store.UploadLog" store:Type="Tables" Schema="dbo" />
+          <EntitySet Name="UploadLogStrokeData" EntityType="Eureka.Stroke.EurekaStrokeEntities.Store.UploadLogStrokeData" store:Type="Tables" Schema="dbo" />
+          <EntitySet Name="UserFacility" EntityType="Eureka.Stroke.EurekaStrokeEntities.Store.UserFacility" store:Type="Tables" Schema="dbo" />
+          <EntitySet Name="UserFolder" EntityType="Eureka.Stroke.EurekaStrokeEntities.Store.UserFolder" store:Type="Tables" Schema="dbo" />
+          <EntitySet Name="UserReport" EntityType="Eureka.Stroke.EurekaStrokeEntities.Store.UserReport" store:Type="Tables" Schema="dbo" />
+          <EntitySet Name="UserReportingSource" EntityType="Eureka.Stroke.EurekaStrokeEntities.Store.UserReportingSource" store:Type="Tables" Schema="dbo" />
+          <EntitySet Name="StrokeUser" EntityType="Eureka.Stroke.EurekaStrokeEntities.Store.StrokeUser" store:Type="Views" store:Schema="dbo" store:Name="StrokeUser">
+            <DefiningQuery>SELECT 
+      [StrokeUser].[ID] AS [ID], 
+      [StrokeUser].[UserName] AS [UserName]
+      FROM [dbo].[StrokeUser] AS [StrokeUser]</DefiningQuery>
+          </EntitySet>
+          <AssociationSet Name="BusinessRuleCheckResults_fk" Association="Eureka.Stroke.EurekaStrokeEntities.Store.BusinessRuleCheckResults_fk">
+            <End Role="StrokeData" EntitySet="StrokeData" />
+            <End Role="BusinessRuleCheckResults" EntitySet="BusinessRuleCheckResults" />
+          </AssociationSet>
+          <AssociationSet Name="FK_AlienField_EurekaField" Association="Eureka.Stroke.EurekaStrokeEntities.Store.FK_AlienField_EurekaField">
+            <End Role="EurekaField" EntitySet="EurekaField" />
+            <End Role="AlienField" EntitySet="AlienField" />
+          </AssociationSet>
+          <AssociationSet Name="FK_AlienField_Format" Association="Eureka.Stroke.EurekaStrokeEntities.Store.FK_AlienField_Format">
+            <End Role="Format" EntitySet="Format" />
+            <End Role="AlienField" EntitySet="AlienField" />
+          </AssociationSet>
+          <AssociationSet Name="FK_AlienValue_EurekaField" Association="Eureka.Stroke.EurekaStrokeEntities.Store.FK_AlienValue_EurekaField">
+            <End Role="EurekaField" EntitySet="EurekaField" />
+            <End Role="AlienValue" EntitySet="AlienValue" />
+          </AssociationSet>
+          <AssociationSet Name="FK_AlienValue_EurekaValue" Association="Eureka.Stroke.EurekaStrokeEntities.Store.FK_AlienValue_EurekaValue">
+            <End Role="EurekaValue" EntitySet="EurekaValue" />
+            <End Role="AlienValue" EntitySet="AlienValue" />
+          </AssociationSet>
+          <AssociationSet Name="FK_AlienValue_Format" Association="Eureka.Stroke.EurekaStrokeEntities.Store.FK_AlienValue_Format">
+            <End Role="Format" EntitySet="Format" />
+            <End Role="AlienValue" EntitySet="AlienValue" />
+          </AssociationSet>
+          <AssociationSet Name="FK_AuditLog_StrokeFieldValue" Association="Eureka.Stroke.EurekaStrokeEntities.Store.FK_AuditLog_StrokeFieldValue">
+            <End Role="StrokeFieldValue" EntitySet="StrokeFieldValue" />
+            <End Role="AuditLog" EntitySet="AuditLog" />
+          </AssociationSet>
+          <AssociationSet Name="FK_AuditLog_UploadLog" Association="Eureka.Stroke.EurekaStrokeEntities.Store.FK_AuditLog_UploadLog">
+            <End Role="UploadLog" EntitySet="UploadLog" />
+            <End Role="AuditLog" EntitySet="AuditLog" />
+          </AssociationSet>
+          <AssociationSet Name="FK_EurekaField_Format" Association="Eureka.Stroke.EurekaStrokeEntities.Store.FK_EurekaField_Format">
+            <End Role="Format" EntitySet="Format" />
+            <End Role="EurekaField" EntitySet="EurekaField" />
+          </AssociationSet>
+          <AssociationSet Name="FK_EurekaValue_EurekaField" Association="Eureka.Stroke.EurekaStrokeEntities.Store.FK_EurekaValue_EurekaField">
+            <End Role="EurekaField" EntitySet="EurekaField" />
+            <End Role="EurekaValue" EntitySet="EurekaValue" />
+          </AssociationSet>
+          <AssociationSet Name="FK_Facility_Format" Association="Eureka.Stroke.EurekaStrokeEntities.Store.FK_Facility_Format">
+            <End Role="Format" EntitySet="Format" />
+            <End Role="Facility" EntitySet="Facility" />
+          </AssociationSet>
+          <AssociationSet Name="FK_FormatRecordKeyIDs_EurekaFieldID" Association="Eureka.Stroke.EurekaStrokeEntities.Store.FK_FormatRecordKeyIDs_EurekaFieldID">
+            <End Role="EurekaField" EntitySet="EurekaField" />
+            <End Role="KeyEurekaField" EntitySet="KeyEurekaField" />
+          </AssociationSet>
+          <AssociationSet Name="FK_FormatRecordKeyIDs_FormatID" Association="Eureka.Stroke.EurekaStrokeEntities.Store.FK_FormatRecordKeyIDs_FormatID">
+            <End Role="Format" EntitySet="Format" />
+            <End Role="KeyEurekaField" EntitySet="KeyEurekaField" />
+          </AssociationSet>
+          <AssociationSet Name="FK_Report_FolderID" Association="Eureka.Stroke.EurekaStrokeEntities.Store.FK_Report_FolderID">
+            <End Role="Folder" EntitySet="Folder" />
+            <End Role="Report" EntitySet="Report" />
+          </AssociationSet>
+          <AssociationSet Name="FK_StrokeData" Association="Eureka.Stroke.EurekaStrokeEntities.Store.FK_StrokeData">
+            <End Role="StrokeData" EntitySet="StrokeData" />
+            <End Role="UploadLogStrokeData" EntitySet="UploadLogStrokeData" />
+          </AssociationSet>
+          <AssociationSet Name="FK_StrokeFieldValue_EurekaField" Association="Eureka.Stroke.EurekaStrokeEntities.Store.FK_StrokeFieldValue_EurekaField">
+            <End Role="EurekaField" EntitySet="EurekaField" />
+            <End Role="StrokeFieldValue" EntitySet="StrokeFieldValue" />
+          </AssociationSet>
+          <AssociationSet Name="FK_StrokeFieldValue_StrokeData" Association="Eureka.Stroke.EurekaStrokeEntities.Store.FK_StrokeFieldValue_StrokeData">
+            <End Role="StrokeData" EntitySet="StrokeData" />
+            <End Role="StrokeFieldValue" EntitySet="StrokeFieldValue" />
+          </AssociationSet>
+          <AssociationSet Name="FK_UploadLog" Association="Eureka.Stroke.EurekaStrokeEntities.Store.FK_UploadLog">
+            <End Role="UploadLog" EntitySet="UploadLog" />
+            <End Role="UploadLogStrokeData" EntitySet="UploadLogStrokeData" />
+          </AssociationSet>
+          <AssociationSet Name="FK_UploadLog_FacilityID" Association="Eureka.Stroke.EurekaStrokeEntities.Store.FK_UploadLog_FacilityID">
+            <End Role="Facility" EntitySet="Facility" />
+            <End Role="UploadLog" EntitySet="UploadLog" />
+          </AssociationSet>
+          <AssociationSet Name="FK_UploadLog_Format" Association="Eureka.Stroke.EurekaStrokeEntities.Store.FK_UploadLog_Format">
+            <End Role="Format" EntitySet="Format" />
+            <End Role="UploadLog" EntitySet="UploadLog" />
+          </AssociationSet>
+          <AssociationSet Name="FK_UserFacility_FacilityID" Association="Eureka.Stroke.EurekaStrokeEntities.Store.FK_UserFacility_FacilityID">
+            <End Role="Facility" EntitySet="Facility" />
+            <End Role="UserFacility" EntitySet="UserFacility" />
+          </AssociationSet>
+          <AssociationSet Name="FK_UserFolder_FolderID" Association="Eureka.Stroke.EurekaStrokeEntities.Store.FK_UserFolder_FolderID">
+            <End Role="Folder" EntitySet="Folder" />
+            <End Role="UserFolder" EntitySet="UserFolder" />
+          </AssociationSet>
+          <AssociationSet Name="FK_UserReport_ReportID" Association="Eureka.Stroke.EurekaStrokeEntities.Store.FK_UserReport_ReportID">
+            <End Role="Report" EntitySet="Report" />
+            <End Role="UserReport" EntitySet="UserReport" />
+          </AssociationSet>
+        </EntityContainer>
+        <EntityType Name="AlienField">
+          <Key>
+            <PropertyRef Name="ID" />
+          </Key>
+          <Property Name="ID" Type="int" Nullable="false" StoreGeneratedPattern="Identity" />
+          <Property Name="Name" Type="varchar" Nullable="false" MaxLength="64" />
+          <Property Name="EurekaFieldID" Type="int" Nullable="false" />
+          <Property Name="FormatID" Type="int" Nullable="false" />
+          <Property Name="RegularExpression" Type="varchar" MaxLength="64" />
+          <Property Name="CreatedBy" Type="int" />
+          <Property Name="LastModifiedBy" Type="int" />
+          <Property Name="CreatedDate" Type="datetime" />
+          <Property Name="LastModifiedDate" Type="datetime" />
+        </EntityType>
+        <EntityType Name="AlienValue">
+          <Key>
+            <PropertyRef Name="ID" />
+          </Key>
+          <Property Name="ID" Type="int" Nullable="false" StoreGeneratedPattern="Identity" />
+          <Property Name="EurekaFieldID" Type="int" Nullable="false" />
+          <Property Name="FormatID" Type="int" Nullable="false" />
+          <Property Name="Value" Type="varchar" Nullable="false" MaxLength="64" />
+          <Property Name="EurekaValueID" Type="int" />
+          <Property Name="CreatedBy" Type="int" />
+          <Property Name="LastModifiedBy" Type="int" />
+          <Property Name="CreatedDate" Type="datetime" />
+          <Property Name="LastModifiedDate" Type="datetime" />
+          <Property Name="Description" Type="nvarchar(max)" Nullable="false" />
+        </EntityType>
+        <EntityType Name="AuditLog">
+          <Key>
+            <PropertyRef Name="ID" />
+          </Key>
+          <Property Name="ID" Type="int" Nullable="false" StoreGeneratedPattern="Identity" />
+          <Property Name="FieldValueID" Type="int" />
+          <Property Name="Action" Type="smallint" Nullable="false" />
+          <Property Name="ActionDate" Type="datetime" Nullable="false" />
+          <Property Name="ActionUser" Type="int" Nullable="false" />
+          <Property Name="OldValue" Type="varchar(max)" />
+          <Property Name="NextValue" Type="varchar(max)" />
+          <Property Name="Status" Type="int" />
+          <Property Name="FieldName" Type="varchar" MaxLength="512" />
+          <Property Name="RowNumber" Type="int" />
+          <Property Name="ErrorMessage" Type="nvarchar(max)" />
+          <Property Name="UploadLogID" Type="int" />
+          <Property Name="ItemType" Type="smallint" />
+        </EntityType>
+        <EntityType Name="BusinessRuleCheckResults">
+          <Key>
+            <PropertyRef Name="ID" />
+          </Key>
+          <Property Name="ID" Type="int" Nullable="false" StoreGeneratedPattern="Identity" />
+          <Property Name="StrokeDataID" Type="int" Nullable="false" />
+          <Property Name="RuleID" Type="int" Nullable="false" />
+          <Property Name="RuleBreaker" Type="bit" Nullable="false" />
+          <Property Name="ErrorMessage" Type="varchar" Nullable="false" MaxLength="1024" />
+        </EntityType>
+        <EntityType Name="EurekaField">
+          <Key>
+            <PropertyRef Name="ID" />
+          </Key>
+          <Property Name="ID" Type="int" Nullable="false" StoreGeneratedPattern="Identity" />
+          <Property Name="Name" Type="varchar" Nullable="false" MaxLength="64" />
+          <Property Name="FormatID" Type="int" Nullable="false" />
+          <Property Name="FieldType" Type="smallint" Nullable="false" />
+          <Property Name="Description" Type="varchar(max)" />
+          <Property Name="IsMandatory" Type="bit" Nullable="false" />
+          <Property Name="CreatedBy" Type="int" />
+          <Property Name="LastModifiedBy" Type="int" />
+          <Property Name="CreatedDate" Type="datetime" />
+          <Property Name="LastModifiedDate" Type="datetime" />
+          <Property Name="IsNew" Type="bit" Nullable="false" />
+        </EntityType>
+        <EntityType Name="EurekaValue">
+          <Key>
+            <PropertyRef Name="ID" />
+          </Key>
+          <Property Name="ID" Type="int" Nullable="false" StoreGeneratedPattern="Identity" />
+          <Property Name="EurekaFieldID" Type="int" Nullable="false" />
+          <Property Name="Value" Type="varchar" Nullable="false" MaxLength="64" />
+          <Property Name="Description" Type="varchar(max)" />
+          <Property Name="CreatedBy" Type="int" />
+          <Property Name="LastModifiedBy" Type="int" />
+          <Property Name="CreatedDate" Type="datetime" />
+          <Property Name="LastModifiedDate" Type="datetime" />
+        </EntityType>
+        <EntityType Name="Facility">
+          <Key>
+            <PropertyRef Name="ID" />
+          </Key>
+          <Property Name="ID" Type="int" Nullable="false" StoreGeneratedPattern="Identity" />
+          <Property Name="Name" Type="varchar" Nullable="false" MaxLength="100" />
+          <Property Name="FormatID" Type="int" />
+        </EntityType>
+        <EntityType Name="Folder">
+          <Key>
+            <PropertyRef Name="ID" />
+          </Key>
+          <Property Name="ID" Type="int" Nullable="false" StoreGeneratedPattern="Identity" />
+          <Property Name="Name" Type="varchar" Nullable="false" MaxLength="128" />
+          <Property Name="Rank" Type="int" Nullable="false" />
+          <Property Name="Enabled" Type="bit" Nullable="false" />
+        </EntityType>
+        <EntityType Name="Format">
+          <Key>
+            <PropertyRef Name="ID" />
+          </Key>
+          <Property Name="ID" Type="int" Nullable="false" StoreGeneratedPattern="Identity" />
+          <Property Name="Name" Type="varchar" Nullable="false" MaxLength="100" />
+          <Property Name="IsNative" Type="bit" />
+          <Property Name="KeyFields" Type="varchar" MaxLength="1024" />
+          <Property Name="Status" Type="smallint" />
+        </EntityType>
+        <EntityType Name="KeyEurekaField">
+          <Key>
+            <PropertyRef Name="FormatID" />
+            <PropertyRef Name="EurekaFieldID" />
+          </Key>
+          <Property Name="FormatID" Type="int" Nullable="false" />
+          <Property Name="EurekaFieldID" Type="int" Nullable="false" />
+        </EntityType>
+        <EntityType Name="Report">
+          <Key>
+            <PropertyRef Name="ID" />
+          </Key>
+          <Property Name="ID" Type="int" Nullable="false" StoreGeneratedPattern="Identity" />
+          <Property Name="Name" Type="varchar" Nullable="false" MaxLength="128" />
+          <Property Name="Description" Type="varchar(max)" />
+          <Property Name="Enabled" Type="bit" Nullable="false" />
+          <Property Name="FolderID" Type="int" Nullable="false" />
+          <Property Name="RSName" Type="varchar" Nullable="false" MaxLength="128" />
+        </EntityType>
+        <EntityType Name="StrokeData">
+          <Key>
+            <PropertyRef Name="ID" />
+          </Key>
+          <Property Name="ID" Type="int" Nullable="false" StoreGeneratedPattern="Identity" />
+          <Property Name="PatientID" Type="varchar" Nullable="false" MaxLength="256" />
+          <Property Name="CreatedDate" Type="datetime" />
+          <Property Name="CreatedBy" Type="int" />
+          <Property Name="LastModifiedDate" Type="datetime" />
+          <Property Name="LastModifiedBy" Type="int" />
+          <Property Name="Status" Type="smallint" />
+          <Property Name="AdmissionDate" Type="datetime" Nullable="false" />
+          <Property Name="ReportingSource" Type="varchar" MaxLength="128" />
+        </EntityType>
+        <EntityType Name="StrokeFieldValue">
+          <Key>
+            <PropertyRef Name="ID" />
+          </Key>
+          <Property Name="ID" Type="int" Nullable="false" StoreGeneratedPattern="Identity" />
+          <Property Name="StrokeDataID" Type="int" Nullable="false" />
+          <Property Name="FieldID" Type="int" Nullable="false" />
+          <Property Name="IntegerValue" Type="int" />
+          <Property Name="BooleanValue" Type="bit" />
+          <Property Name="StringValue" Type="varchar(max)" />
+          <Property Name="DateTimeValue" Type="datetime" />
+          <Property Name="DecimalValue" Type="decimal" Precision="19" Scale="6" />
+          <Property Name="RawValue" Type="varchar(max)" />
+          <Property Name="CreatedDate" Type="datetime" />
+          <Property Name="CreatedBy" Type="int" />
+          <Property Name="LastModifiedBy" Type="int" />
+          <Property Name="LastModifiedDate" Type="datetime" />
+          <Property Name="Status" Type="smallint" />
+        </EntityType>
+        <EntityType Name="UploadLog">
+          <Key>
+            <PropertyRef Name="ID" />
+          </Key>
+          <Property Name="ID" Type="int" Nullable="false" StoreGeneratedPattern="Identity" />
+          <Property Name="Filename" Type="varchar" Nullable="false" MaxLength="100" />
+          <Property Name="Status" Type="int" />
+          <Property Name="ErrorCount" Type="int" />
+          <Property Name="ChangesCount" Type="int" />
+          <Property Name="TotalCount" Type="int" />
+          <Property Name="StartedDate" Type="datetime" />
+          <Property Name="CompletionDate" Type="datetime" />
+          <Property Name="StartedBy" Type="int" />
+          <Property Name="FacilityID" Type="int" Nullable="false" />
+          <Property Name="FormatID" Type="int" />
+          <Property Name="CorrectionsCount" Type="int" />
+          <Property Name="OriginalFilename" Type="varchar" Nullable="false" MaxLength="100" />
+        </EntityType>
+        <EntityType Name="UploadLogStrokeData">
+          <Key>
+            <PropertyRef Name="UploadLogID" />
+            <PropertyRef Name="StrokeDataID" />
+          </Key>
+          <Property Name="UploadLogID" Type="int" Nullable="false" />
+          <Property Name="StrokeDataID" Type="int" Nullable="false" />
+        </EntityType>
+        <EntityType Name="UserFacility">
+          <Key>
+            <PropertyRef Name="FacilityID" />
+            <PropertyRef Name="UserID" />
+          </Key>
+          <Property Name="FacilityID" Type="int" Nullable="false" />
+          <Property Name="UserID" Type="int" Nullable="false" />
+        </EntityType>
+        <EntityType Name="UserFolder">
+          <Key>
+            <PropertyRef Name="FolderID" />
+            <PropertyRef Name="UserID" />
+          </Key>
+          <Property Name="FolderID" Type="int" Nullable="false" />
+          <Property Name="UserID" Type="int" Nullable="false" />
+        </EntityType>
+        <EntityType Name="UserReport">
+          <Key>
+            <PropertyRef Name="ReportID" />
+            <PropertyRef Name="UserID" />
+          </Key>
+          <Property Name="ReportID" Type="int" Nullable="false" />
+          <Property Name="UserID" Type="int" Nullable="false" />
+        </EntityType>
+        <EntityType Name="UserReportingSource">
+          <Key>
+            <PropertyRef Name="ReportingSource" />
+            <PropertyRef Name="UserID" />
+          </Key>
+          <Property Name="ReportingSource" Type="varchar" Nullable="false" MaxLength="128" />
+          <Property Name="UserID" Type="int" Nullable="false" />
+        </EntityType>
+        <!--Errors Found During Generation:
+      warning 6002: The table/view 'EurekaStroke.dbo.StrokeUser' does not have a primary key defined. The key has been inferred and the definition was created as a read-only table/view.
+      -->
+        <EntityType Name="StrokeUser">
+          <Key>
+            <PropertyRef Name="ID" />
+            <PropertyRef Name="UserName" />
+          </Key>
+          <Property Name="ID" Type="int" Nullable="false" />
+          <Property Name="UserName" Type="varchar" Nullable="false" MaxLength="8" />
+        </EntityType>
+        <Association Name="BusinessRuleCheckResults_fk">
+          <End Role="StrokeData" Type="Eureka.Stroke.EurekaStrokeEntities.Store.StrokeData" Multiplicity="1" />
+          <End Role="BusinessRuleCheckResults" Type="Eureka.Stroke.EurekaStrokeEntities.Store.BusinessRuleCheckResults" Multiplicity="*" />
+          <ReferentialConstraint>
+            <Principal Role="StrokeData">
+              <PropertyRef Name="ID" />
+            </Principal>
+            <Dependent Role="BusinessRuleCheckResults">
+              <PropertyRef Name="StrokeDataID" />
+            </Dependent>
+          </ReferentialConstraint>
+        </Association>
+        <Association Name="FK_AlienField_EurekaField">
+          <End Role="EurekaField" Type="Eureka.Stroke.EurekaStrokeEntities.Store.EurekaField" Multiplicity="1" />
+          <End Role="AlienField" Type="Eureka.Stroke.EurekaStrokeEntities.Store.AlienField" Multiplicity="*" />
+          <ReferentialConstraint>
+            <Principal Role="EurekaField">
+              <PropertyRef Name="ID" />
+            </Principal>
+            <Dependent Role="AlienField">
+              <PropertyRef Name="EurekaFieldID" />
+            </Dependent>
+          </ReferentialConstraint>
+        </Association>
+        <Association Name="FK_AlienField_Format">
+          <End Role="Format" Type="Eureka.Stroke.EurekaStrokeEntities.Store.Format" Multiplicity="1" />
+          <End Role="AlienField" Type="Eureka.Stroke.EurekaStrokeEntities.Store.AlienField" Multiplicity="*" />
+          <ReferentialConstraint>
+            <Principal Role="Format">
+              <PropertyRef Name="ID" />
+            </Principal>
+            <Dependent Role="AlienField">
+              <PropertyRef Name="FormatID" />
+            </Dependent>
+          </ReferentialConstraint>
+        </Association>
+        <Association Name="FK_AlienValue_EurekaField">
+          <End Role="EurekaField" Type="Eureka.Stroke.EurekaStrokeEntities.Store.EurekaField" Multiplicity="1" />
+          <End Role="AlienValue" Type="Eureka.Stroke.EurekaStrokeEntities.Store.AlienValue" Multiplicity="*" />
+          <ReferentialConstraint>
+            <Principal Role="EurekaField">
+              <PropertyRef Name="ID" />
+            </Principal>
+            <Dependent Role="AlienValue">
+              <PropertyRef Name="EurekaFieldID" />
+            </Dependent>
+          </ReferentialConstraint>
+        </Association>
+        <Association Name="FK_AlienValue_EurekaValue">
+          <End Role="EurekaValue" Type="Eureka.Stroke.EurekaStrokeEntities.Store.EurekaValue" Multiplicity="0..1" />
+          <End Role="AlienValue" Type="Eureka.Stroke.EurekaStrokeEntities.Store.AlienValue" Multiplicity="*" />
+          <ReferentialConstraint>
+            <Principal Role="EurekaValue">
+              <PropertyRef Name="ID" />
+            </Principal>
+            <Dependent Role="AlienValue">
+              <PropertyRef Name="EurekaValueID" />
+            </Dependent>
+          </ReferentialConstraint>
+        </Association>
+        <Association Name="FK_AlienValue_Format">
+          <End Role="Format" Type="Eureka.Stroke.EurekaStrokeEntities.Store.Format" Multiplicity="1" />
+          <End Role="AlienValue" Type="Eureka.Stroke.EurekaStrokeEntities.Store.AlienValue" Multiplicity="*" />
+          <ReferentialConstraint>
+            <Principal Role="Format">
+              <PropertyRef Name="ID" />
+            </Principal>
+            <Dependent Role="AlienValue">
+              <PropertyRef Name="FormatID" />
+            </Dependent>
+          </ReferentialConstraint>
+        </Association>
+        <Association Name="FK_AuditLog_StrokeFieldValue">
+          <End Role="StrokeFieldValue" Type="Eureka.Stroke.EurekaStrokeEntities.Store.StrokeFieldValue" Multiplicity="0..1" />
+          <End Role="AuditLog" Type="Eureka.Stroke.EurekaStrokeEntities.Store.AuditLog" Multiplicity="*" />
+          <ReferentialConstraint>
+            <Principal Role="StrokeFieldValue">
+              <PropertyRef Name="ID" />
+            </Principal>
+            <Dependent Role="AuditLog">
+              <PropertyRef Name="FieldValueID" />
+            </Dependent>
+          </ReferentialConstraint>
+        </Association>
+        <Association Name="FK_AuditLog_UploadLog">
+          <End Role="UploadLog" Type="Eureka.Stroke.EurekaStrokeEntities.Store.UploadLog" Multiplicity="0..1" />
+          <End Role="AuditLog" Type="Eureka.Stroke.EurekaStrokeEntities.Store.AuditLog" Multiplicity="*" />
+          <ReferentialConstraint>
+            <Principal Role="UploadLog">
+              <PropertyRef Name="ID" />
+            </Principal>
+            <Dependent Role="AuditLog">
+              <PropertyRef Name="UploadLogID" />
+            </Dependent>
+          </ReferentialConstraint>
+        </Association>
+        <Association Name="FK_EurekaField_Format">
+          <End Role="Format" Type="Eureka.Stroke.EurekaStrokeEntities.Store.Format" Multiplicity="1" />
+          <End Role="EurekaField" Type="Eureka.Stroke.EurekaStrokeEntities.Store.EurekaField" Multiplicity="*" />
+          <ReferentialConstraint>
+            <Principal Role="Format">
+              <PropertyRef Name="ID" />
+            </Principal>
+            <Dependent Role="EurekaField">
+              <PropertyRef Name="FormatID" />
+            </Dependent>
+          </ReferentialConstraint>
+        </Association>
+        <Association Name="FK_EurekaValue_EurekaField">
+          <End Role="EurekaField" Type="Eureka.Stroke.EurekaStrokeEntities.Store.EurekaField" Multiplicity="1" />
+          <End Role="EurekaValue" Type="Eureka.Stroke.EurekaStrokeEntities.Store.EurekaValue" Multiplicity="*" />
+          <ReferentialConstraint>
+            <Principal Role="EurekaField">
+              <PropertyRef Name="ID" />
+            </Principal>
+            <Dependent Role="EurekaValue">
+              <PropertyRef Name="EurekaFieldID" />
+            </Dependent>
+          </ReferentialConstraint>
+        </Association>
+        <Association Name="FK_Facility_Format">
+          <End Role="Format" Type="Eureka.Stroke.EurekaStrokeEntities.Store.Format" Multiplicity="0..1" />
+          <End Role="Facility" Type="Eureka.Stroke.EurekaStrokeEntities.Store.Facility" Multiplicity="*" />
+          <ReferentialConstraint>
+            <Principal Role="Format">
+              <PropertyRef Name="ID" />
+            </Principal>
+            <Dependent Role="Facility">
+              <PropertyRef Name="FormatID" />
+            </Dependent>
+          </ReferentialConstraint>
+        </Association>
+        <Association Name="FK_FormatRecordKeyIDs_EurekaFieldID">
+          <End Role="EurekaField" Type="Eureka.Stroke.EurekaStrokeEntities.Store.EurekaField" Multiplicity="1" />
+          <End Role="KeyEurekaField" Type="Eureka.Stroke.EurekaStrokeEntities.Store.KeyEurekaField" Multiplicity="*" />
+          <ReferentialConstraint>
+            <Principal Role="EurekaField">
+              <PropertyRef Name="ID" />
+            </Principal>
+            <Dependent Role="KeyEurekaField">
+              <PropertyRef Name="EurekaFieldID" />
+            </Dependent>
+          </ReferentialConstraint>
+        </Association>
+        <Association Name="FK_FormatRecordKeyIDs_FormatID">
+          <End Role="Format" Type="Eureka.Stroke.EurekaStrokeEntities.Store.Format" Multiplicity="1" />
+          <End Role="KeyEurekaField" Type="Eureka.Stroke.EurekaStrokeEntities.Store.KeyEurekaField" Multiplicity="*" />
+          <ReferentialConstraint>
+            <Principal Role="Format">
+              <PropertyRef Name="ID" />
+            </Principal>
+            <Dependent Role="KeyEurekaField">
+              <PropertyRef Name="FormatID" />
+            </Dependent>
+          </ReferentialConstraint>
+        </Association>
+        <Association Name="FK_Report_FolderID">
+          <End Role="Folder" Type="Eureka.Stroke.EurekaStrokeEntities.Store.Folder" Multiplicity="1" />
+          <End Role="Report" Type="Eureka.Stroke.EurekaStrokeEntities.Store.Report" Multiplicity="*" />
+          <ReferentialConstraint>
+            <Principal Role="Folder">
+              <PropertyRef Name="ID" />
+            </Principal>
+            <Dependent Role="Report">
+              <PropertyRef Name="FolderID" />
+            </Dependent>
+          </ReferentialConstraint>
+        </Association>
+        <Association Name="FK_StrokeData">
+          <End Role="StrokeData" Type="Eureka.Stroke.EurekaStrokeEntities.Store.StrokeData" Multiplicity="1" />
+          <End Role="UploadLogStrokeData" Type="Eureka.Stroke.EurekaStrokeEntities.Store.UploadLogStrokeData" Multiplicity="*" />
+          <ReferentialConstraint>
+            <Principal Role="StrokeData">
+              <PropertyRef Name="ID" />
+            </Principal>
+            <Dependent Role="UploadLogStrokeData">
+              <PropertyRef Name="StrokeDataID" />
+            </Dependent>
+          </ReferentialConstraint>
+        </Association>
+        <Association Name="FK_StrokeFieldValue_EurekaField">
+          <End Role="EurekaField" Type="Eureka.Stroke.EurekaStrokeEntities.Store.EurekaField" Multiplicity="1" />
+          <End Role="StrokeFieldValue" Type="Eureka.Stroke.EurekaStrokeEntities.Store.StrokeFieldValue" Multiplicity="*" />
+          <ReferentialConstraint>
+            <Principal Role="EurekaField">
+              <PropertyRef Name="ID" />
+            </Principal>
+            <Dependent Role="StrokeFieldValue">
+              <PropertyRef Name="FieldID" />
+            </Dependent>
+          </ReferentialConstraint>
+        </Association>
+        <Association Name="FK_StrokeFieldValue_StrokeData">
+          <End Role="StrokeData" Type="Eureka.Stroke.EurekaStrokeEntities.Store.StrokeData" Multiplicity="1" />
+          <End Role="StrokeFieldValue" Type="Eureka.Stroke.EurekaStrokeEntities.Store.StrokeFieldValue" Multiplicity="*" />
+          <ReferentialConstraint>
+            <Principal Role="StrokeData">
+              <PropertyRef Name="ID" />
+            </Principal>
+            <Dependent Role="StrokeFieldValue">
+              <PropertyRef Name="StrokeDataID" />
+            </Dependent>
+          </ReferentialConstraint>
+        </Association>
+        <Association Name="FK_UploadLog">
+          <End Role="UploadLog" Type="Eureka.Stroke.EurekaStrokeEntities.Store.UploadLog" Multiplicity="1" />
+          <End Role="UploadLogStrokeData" Type="Eureka.Stroke.EurekaStrokeEntities.Store.UploadLogStrokeData" Multiplicity="*" />
+          <ReferentialConstraint>
+            <Principal Role="UploadLog">
+              <PropertyRef Name="ID" />
+            </Principal>
+            <Dependent Role="UploadLogStrokeData">
+              <PropertyRef Name="UploadLogID" />
+            </Dependent>
+          </ReferentialConstraint>
+        </Association>
+        <Association Name="FK_UploadLog_FacilityID">
+          <End Role="Facility" Type="Eureka.Stroke.EurekaStrokeEntities.Store.Facility" Multiplicity="1" />
+          <End Role="UploadLog" Type="Eureka.Stroke.EurekaStrokeEntities.Store.UploadLog" Multiplicity="*" />
+          <ReferentialConstraint>
+            <Principal Role="Facility">
+              <PropertyRef Name="ID" />
+            </Principal>
+            <Dependent Role="UploadLog">
+              <PropertyRef Name="FacilityID" />
+            </Dependent>
+          </ReferentialConstraint>
+        </Association>
+        <Association Name="FK_UploadLog_Format">
+          <End Role="Format" Type="Eureka.Stroke.EurekaStrokeEntities.Store.Format" Multiplicity="0..1" />
+          <End Role="UploadLog" Type="Eureka.Stroke.EurekaStrokeEntities.Store.UploadLog" Multiplicity="*" />
+          <ReferentialConstraint>
+            <Principal Role="Format">
+              <PropertyRef Name="ID" />
+            </Principal>
+            <Dependent Role="UploadLog">
+              <PropertyRef Name="FormatID" />
+            </Dependent>
+          </ReferentialConstraint>
+        </Association>
+        <Association Name="FK_UserFacility_FacilityID">
+          <End Role="Facility" Type="Eureka.Stroke.EurekaStrokeEntities.Store.Facility" Multiplicity="1" />
+          <End Role="UserFacility" Type="Eureka.Stroke.EurekaStrokeEntities.Store.UserFacility" Multiplicity="*" />
+          <ReferentialConstraint>
+            <Principal Role="Facility">
+              <PropertyRef Name="ID" />
+            </Principal>
+            <Dependent Role="UserFacility">
+              <PropertyRef Name="FacilityID" />
+            </Dependent>
+          </ReferentialConstraint>
+        </Association>
+        <Association Name="FK_UserFolder_FolderID">
+          <End Role="Folder" Type="Eureka.Stroke.EurekaStrokeEntities.Store.Folder" Multiplicity="1" />
+          <End Role="UserFolder" Type="Eureka.Stroke.EurekaStrokeEntities.Store.UserFolder" Multiplicity="*" />
+          <ReferentialConstraint>
+            <Principal Role="Folder">
+              <PropertyRef Name="ID" />
+            </Principal>
+            <Dependent Role="UserFolder">
+              <PropertyRef Name="FolderID" />
+            </Dependent>
+          </ReferentialConstraint>
+        </Association>
+        <Association Name="FK_UserReport_ReportID">
+          <End Role="Report" Type="Eureka.Stroke.EurekaStrokeEntities.Store.Report" Multiplicity="1" />
+          <End Role="UserReport" Type="Eureka.Stroke.EurekaStrokeEntities.Store.UserReport" Multiplicity="*" />
+          <ReferentialConstraint>
+            <Principal Role="Report">
+              <PropertyRef Name="ID" />
+            </Principal>
+            <Dependent Role="UserReport">
+              <PropertyRef Name="ReportID" />
+            </Dependent>
+          </ReferentialConstraint>
+        </Association>
+      </Schema>
+    </edmx:StorageModels>
+    <!-- CSDL content -->
+    <edmx:ConceptualModels>
+      <Schema Namespace="Eureka.Stroke.EurekaStrokeEntities" Alias="Self" xmlns="http://schemas.microsoft.com/ado/2006/04/edm">
+        <EntityContainer Name="EurekaStrokeEntities">
+          <EntitySet Name="AlienField" EntityType="Eureka.Stroke.EurekaStrokeEntities.AlienField" />
+          <EntitySet Name="AlienValue" EntityType="Eureka.Stroke.EurekaStrokeEntities.AlienValue" />
+          <EntitySet Name="AuditLog" EntityType="Eureka.Stroke.EurekaStrokeEntities.AuditLog" />
+          <EntitySet Name="BusinessRuleCheckResults" EntityType="Eureka.Stroke.EurekaStrokeEntities.BusinessRuleCheckResults" />
+          <EntitySet Name="EurekaField" EntityType="Eureka.Stroke.EurekaStrokeEntities.EurekaField" />
+          <EntitySet Name="EurekaValue" EntityType="Eureka.Stroke.EurekaStrokeEntities.EurekaValue" />
+          <EntitySet Name="Facility" EntityType="Eureka.Stroke.EurekaStrokeEntities.Facility" />
+          <EntitySet Name="Folder" EntityType="Eureka.Stroke.EurekaStrokeEntities.Folder" />
+          <EntitySet Name="Format" EntityType="Eureka.Stroke.EurekaStrokeEntities.Format" />
+          <EntitySet Name="Report" EntityType="Eureka.Stroke.EurekaStrokeEntities.Report" />
+          <EntitySet Name="StrokeData" EntityType="Eureka.Stroke.EurekaStrokeEntities.StrokeData" />
+          <EntitySet Name="StrokeFieldValue" EntityType="Eureka.Stroke.EurekaStrokeEntities.StrokeFieldValue" />
+          <EntitySet Name="UploadLog" EntityType="Eureka.Stroke.EurekaStrokeEntities.UploadLog" />
+          <EntitySet Name="UserFacility" EntityType="Eureka.Stroke.EurekaStrokeEntities.UserFacility" />
+          <EntitySet Name="UserFolder" EntityType="Eureka.Stroke.EurekaStrokeEntities.UserFolder" />
+          <EntitySet Name="UserReport" EntityType="Eureka.Stroke.EurekaStrokeEntities.UserReport" />
+          <EntitySet Name="UserReportingSource" EntityType="Eureka.Stroke.EurekaStrokeEntities.UserReportingSource" />
+          <EntitySet Name="StrokeUser" EntityType="Eureka.Stroke.EurekaStrokeEntities.StrokeUser" />
+          <AssociationSet Name="FK_AlienField_EurekaField" Association="Eureka.Stroke.EurekaStrokeEntities.FK_AlienField_EurekaField">
+            <End Role="EurekaField" EntitySet="EurekaField" />
+            <End Role="AlienField" EntitySet="AlienField" />
+          </AssociationSet>
+          <AssociationSet Name="FK_AlienField_Format" Association="Eureka.Stroke.EurekaStrokeEntities.FK_AlienField_Format">
+            <End Role="Format" EntitySet="Format" />
+            <End Role="AlienField" EntitySet="AlienField" />
+          </AssociationSet>
+          <AssociationSet Name="FK_AlienValue_EurekaField" Association="Eureka.Stroke.EurekaStrokeEntities.FK_AlienValue_EurekaField">
+            <End Role="EurekaField" EntitySet="EurekaField" />
+            <End Role="AlienValue" EntitySet="AlienValue" />
+          </AssociationSet>
+          <AssociationSet Name="FK_AlienValue_EurekaValue" Association="Eureka.Stroke.EurekaStrokeEntities.FK_AlienValue_EurekaValue">
+            <End Role="EurekaValue" EntitySet="EurekaValue" />
+            <End Role="AlienValue" EntitySet="AlienValue" />
+          </AssociationSet>
+          <AssociationSet Name="FK_AlienValue_Format" Association="Eureka.Stroke.EurekaStrokeEntities.FK_AlienValue_Format">
+            <End Role="Format" EntitySet="Format" />
+            <End Role="AlienValue" EntitySet="AlienValue" />
+          </AssociationSet>
+          <AssociationSet Name="FK_AuditLog_StrokeFieldValue" Association="Eureka.Stroke.EurekaStrokeEntities.FK_AuditLog_StrokeFieldValue">
+            <End Role="StrokeFieldValue" EntitySet="StrokeFieldValue" />
+            <End Role="AuditLog" EntitySet="AuditLog" />
+          </AssociationSet>
+          <AssociationSet Name="FK_AuditLog_UploadLog" Association="Eureka.Stroke.EurekaStrokeEntities.FK_AuditLog_UploadLog">
+            <End Role="UploadLog" EntitySet="UploadLog" />
+            <End Role="AuditLog" EntitySet="AuditLog" />
+          </AssociationSet>
+          <AssociationSet Name="BusinessRuleCheckResults_fk" Association="Eureka.Stroke.EurekaStrokeEntities.BusinessRuleCheckResults_fk">
+            <End Role="StrokeData" EntitySet="StrokeData" />
+            <End Role="BusinessRuleCheckResults" EntitySet="BusinessRuleCheckResults" />
+          </AssociationSet>
+          <AssociationSet Name="FK_EurekaField_Format" Association="Eureka.Stroke.EurekaStrokeEntities.FK_EurekaField_Format">
+            <End Role="Format" EntitySet="Format" />
+            <End Role="EurekaField" EntitySet="EurekaField" />
+          </AssociationSet>
+          <AssociationSet Name="FK_EurekaValue_EurekaField" Association="Eureka.Stroke.EurekaStrokeEntities.FK_EurekaValue_EurekaField">
+            <End Role="EurekaField" EntitySet="EurekaField" />
+            <End Role="EurekaValue" EntitySet="EurekaValue" />
+          </AssociationSet>
+          <AssociationSet Name="FK_StrokeFieldValue_EurekaField" Association="Eureka.Stroke.EurekaStrokeEntities.FK_StrokeFieldValue_EurekaField">
+            <End Role="EurekaField" EntitySet="EurekaField" />
+            <End Role="StrokeFieldValue" EntitySet="StrokeFieldValue" />
+          </AssociationSet>
+          <AssociationSet Name="FK_Facility_Format" Association="Eureka.Stroke.EurekaStrokeEntities.FK_Facility_Format">
+            <End Role="Format" EntitySet="Format" />
+            <End Role="Facility" EntitySet="Facility" />
+          </AssociationSet>
+          <AssociationSet Name="FK_UploadLog_FacilityID" Association="Eureka.Stroke.EurekaStrokeEntities.FK_UploadLog_FacilityID">
+            <End Role="Facility" EntitySet="Facility" />
+            <End Role="UploadLog" EntitySet="UploadLog" />
+          </AssociationSet>
+          <AssociationSet Name="FK_UserFacility_FacilityID" Association="Eureka.Stroke.EurekaStrokeEntities.FK_UserFacility_FacilityID">
+            <End Role="Facility" EntitySet="Facility" />
+            <End Role="UserFacility" EntitySet="UserFacility" />
+          </AssociationSet>
+          <AssociationSet Name="FK_Report_FolderID" Association="Eureka.Stroke.EurekaStrokeEntities.FK_Report_FolderID">
+            <End Role="Folder" EntitySet="Folder" />
+            <End Role="Report" EntitySet="Report" />
+          </AssociationSet>
+          <AssociationSet Name="FK_UserFolder_FolderID" Association="Eureka.Stroke.EurekaStrokeEntities.FK_UserFolder_FolderID">
+            <End Role="Folder" EntitySet="Folder" />
+            <End Role="UserFolder" EntitySet="UserFolder" />
+          </AssociationSet>
+          <AssociationSet Name="FK_UploadLog_Format" Association="Eureka.Stroke.EurekaStrokeEntities.FK_UploadLog_Format">
+            <End Role="Format" EntitySet="Format" />
+            <End Role="UploadLog" EntitySet="UploadLog" />
+          </AssociationSet>
+          <AssociationSet Name="FK_UserReport_ReportID" Association="Eureka.Stroke.EurekaStrokeEntities.FK_UserReport_ReportID">
+            <End Role="Report" EntitySet="Report" />
+            <End Role="UserReport" EntitySet="UserReport" />
+          </AssociationSet>
+          <AssociationSet Name="FK_StrokeFieldValue_StrokeData" Association="Eureka.Stroke.EurekaStrokeEntities.FK_StrokeFieldValue_StrokeData">
+            <End Role="StrokeData" EntitySet="StrokeData" />
+            <End Role="StrokeFieldValue" EntitySet="StrokeFieldValue" />
+          </AssociationSet>
+          <AssociationSet Name="KeyEurekaField" Association="Eureka.Stroke.EurekaStrokeEntities.KeyEurekaField">
+            <End Role="EurekaField" EntitySet="EurekaField" />
+            <End Role="Format" EntitySet="Format" />
+          </AssociationSet>
+          <AssociationSet Name="UploadLogStrokeData" Association="Eureka.Stroke.EurekaStrokeEntities.UploadLogStrokeData">
+            <End Role="StrokeData" EntitySet="StrokeData" />
+            <End Role="UploadLog" EntitySet="UploadLog" />
+          </AssociationSet>
+        </EntityContainer>
+        <EntityType Name="AlienField">
+          <Key>
+            <PropertyRef Name="ID" />
+          </Key>
+          <Property Name="ID" Type="Int32" Nullable="false" />
+          <Property Name="Name" Type="String" Nullable="false" MaxLength="64" Unicode="false" FixedLength="false" />
+          <Property Name="RegularExpression" Type="String" MaxLength="64" Unicode="false" FixedLength="false" />
+          <Property Name="CreatedBy" Type="Int32" />
+          <Property Name="LastModifiedBy" Type="Int32" />
+          <Property Name="CreatedDate" Type="DateTime" />
+          <Property Name="LastModifiedDate" Type="DateTime" />
+          <NavigationProperty Name="EurekaField" Relationship="Eureka.Stroke.EurekaStrokeEntities.FK_AlienField_EurekaField" FromRole="AlienField" ToRole="EurekaField" />
+          <NavigationProperty Name="Format" Relationship="Eureka.Stroke.EurekaStrokeEntities.FK_AlienField_Format" FromRole="AlienField" ToRole="Format" />
+        </EntityType>
+        <EntityType Name="AlienValue">
+          <Key>
+            <PropertyRef Name="ID" />
+          </Key>
+          <Property Name="ID" Type="Int32" Nullable="false" />
+          <Property Name="Value" Type="String" Nullable="false" MaxLength="64" Unicode="false" FixedLength="false" />
+          <Property Name="CreatedBy" Type="Int32" />
+          <Property Name="LastModifiedBy" Type="Int32" />
+          <Property Name="CreatedDate" Type="DateTime" />
+          <Property Name="LastModifiedDate" Type="DateTime" />
+          <Property Name="Description" Type="String" Nullable="false" MaxLength="Max" Unicode="true" FixedLength="false" />
+          <NavigationProperty Name="EurekaField" Relationship="Eureka.Stroke.EurekaStrokeEntities.FK_AlienValue_EurekaField" FromRole="AlienValue" ToRole="EurekaField" />
+          <NavigationProperty Name="EurekaValue" Relationship="Eureka.Stroke.EurekaStrokeEntities.FK_AlienValue_EurekaValue" FromRole="AlienValue" ToRole="EurekaValue" />
+          <NavigationProperty Name="Format" Relationship="Eureka.Stroke.EurekaStrokeEntities.FK_AlienValue_Format" FromRole="AlienValue" ToRole="Format" />
+        </EntityType>
+        <EntityType Name="AuditLog">
+          <Key>
+            <PropertyRef Name="ID" />
+          </Key>
+          <Property Name="ID" Type="Int32" Nullable="false" />
+          <Property Name="Action" Type="Int16" Nullable="false" />
+          <Property Name="ActionDate" Type="DateTime" Nullable="false" />
+          <Property Name="ActionUser" Type="Int32" Nullable="false" />
+          <Property Name="OldValue" Type="String" MaxLength="Max" Unicode="false" FixedLength="false" />
+          <Property Name="NextValue" Type="String" MaxLength="Max" Unicode="false" FixedLength="false" />
+          <Property Name="Status" Type="Int32" />
+          <Property Name="FieldName" Type="String" MaxLength="512" Unicode="false" FixedLength="false" />
+          <Property Name="RowNumber" Type="Int32" />
+          <Property Name="ErrorMessage" Type="String" MaxLength="Max" Unicode="true" FixedLength="false" />
+          <Property Name="ItemType" Type="Int16" />
+          <NavigationProperty Name="StrokeFieldValue" Relationship="Eureka.Stroke.EurekaStrokeEntities.FK_AuditLog_StrokeFieldValue" FromRole="AuditLog" ToRole="StrokeFieldValue" />
+          <NavigationProperty Name="UploadLog" Relationship="Eureka.Stroke.EurekaStrokeEntities.FK_AuditLog_UploadLog" FromRole="AuditLog" ToRole="UploadLog" />
+        </EntityType>
+        <EntityType Name="BusinessRuleCheckResults">
+          <Key>
+            <PropertyRef Name="ID" />
+          </Key>
+          <Property Name="ID" Type="Int32" Nullable="false" />
+          <Property Name="RuleID" Type="Int32" Nullable="false" />
+          <Property Name="RuleBreaker" Type="Boolean" Nullable="false" />
+          <Property Name="ErrorMessage" Type="String" Nullable="false" MaxLength="1024" Unicode="false" FixedLength="false" />
+          <NavigationProperty Name="StrokeData" Relationship="Eureka.Stroke.EurekaStrokeEntities.BusinessRuleCheckResults_fk" FromRole="BusinessRuleCheckResults" ToRole="StrokeData" />
+        </EntityType>
+        <EntityType Name="EurekaField">
+          <Key>
+            <PropertyRef Name="ID" />
+          </Key>
+          <Property Name="ID" Type="Int32" Nullable="false" />
+          <Property Name="Name" Type="String" Nullable="false" MaxLength="64" Unicode="false" FixedLength="false" />
+          <Property Name="FieldType" Type="Int16" Nullable="false" />
+          <Property Name="Description" Type="String" MaxLength="Max" Unicode="false" FixedLength="false" />
+          <Property Name="IsMandatory" Type="Boolean" Nullable="false" />
+          <Property Name="CreatedBy" Type="Int32" />
+          <Property Name="LastModifiedBy" Type="Int32" />
+          <Property Name="CreatedDate" Type="DateTime" />
+          <Property Name="LastModifiedDate" Type="DateTime" />
+          <Property Name="IsNew" Type="Boolean" Nullable="false" />
+          <NavigationProperty Name="AlienField" Relationship="Eureka.Stroke.EurekaStrokeEntities.FK_AlienField_EurekaField" FromRole="EurekaField" ToRole="AlienField" />
+          <NavigationProperty Name="AlienValue" Relationship="Eureka.Stroke.EurekaStrokeEntities.FK_AlienValue_EurekaField" FromRole="EurekaField" ToRole="AlienValue" />
+          <NavigationProperty Name="Format" Relationship="Eureka.Stroke.EurekaStrokeEntities.FK_EurekaField_Format" FromRole="EurekaField" ToRole="Format" />
+          <NavigationProperty Name="EurekaValue" Relationship="Eureka.Stroke.EurekaStrokeEntities.FK_EurekaValue_EurekaField" FromRole="EurekaField" ToRole="EurekaValue" />
+          <NavigationProperty Name="StrokeFieldValue" Relationship="Eureka.Stroke.EurekaStrokeEntities.FK_StrokeFieldValue_EurekaField" FromRole="EurekaField" ToRole="StrokeFieldValue" />
+          <NavigationProperty Name="KeyFormat" Relationship="Eureka.Stroke.EurekaStrokeEntities.KeyEurekaField" FromRole="EurekaField" ToRole="Format" />
+        </EntityType>
+        <EntityType Name="EurekaValue">
+          <Key>
+            <PropertyRef Name="ID" />
+          </Key>
+          <Property Name="ID" Type="Int32" Nullable="false" />
+          <Property Name="Value" Type="String" Nullable="false" MaxLength="64" Unicode="false" FixedLength="false" />
+          <Property Name="Description" Type="String" MaxLength="Max" Unicode="false" FixedLength="false" />
+          <Property Name="CreatedBy" Type="Int32" />
+          <Property Name="LastModifiedBy" Type="Int32" />
+          <Property Name="CreatedDate" Type="DateTime" />
+          <Property Name="LastModifiedDate" Type="DateTime" />
+          <NavigationProperty Name="AlienValue" Relationship="Eureka.Stroke.EurekaStrokeEntities.FK_AlienValue_EurekaValue" FromRole="EurekaValue" ToRole="AlienValue" />
+          <NavigationProperty Name="EurekaField" Relationship="Eureka.Stroke.EurekaStrokeEntities.FK_EurekaValue_EurekaField" FromRole="EurekaValue" ToRole="EurekaField" />
+        </EntityType>
+        <EntityType Name="Facility">
+          <Key>
+            <PropertyRef Name="ID" />
+          </Key>
+          <Property Name="ID" Type="Int32" Nullable="false" />
+          <Property Name="Name" Type="String" Nullable="false" MaxLength="100" Unicode="false" FixedLength="false" />
+          <NavigationProperty Name="Format" Relationship="Eureka.Stroke.EurekaStrokeEntities.FK_Facility_Format" FromRole="Facility" ToRole="Format" />
+          <NavigationProperty Name="UploadLog" Relationship="Eureka.Stroke.EurekaStrokeEntities.FK_UploadLog_FacilityID" FromRole="Facility" ToRole="UploadLog" />
+          <NavigationProperty Name="UserFacility" Relationship="Eureka.Stroke.EurekaStrokeEntities.FK_UserFacility_FacilityID" FromRole="Facility" ToRole="UserFacility" />
+        </EntityType>
+        <EntityType Name="Folder">
+          <Key>
+            <PropertyRef Name="ID" />
+          </Key>
+          <Property Name="ID" Type="Int32" Nullable="false" />
+          <Property Name="Name" Type="String" Nullable="false" MaxLength="128" Unicode="false" FixedLength="false" />
+          <Property Name="Rank" Type="Int32" Nullable="false" />
+          <Property Name="Enabled" Type="Boolean" Nullable="false" />
+          <NavigationProperty Name="Report" Relationship="Eureka.Stroke.EurekaStrokeEntities.FK_Report_FolderID" FromRole="Folder" ToRole="Report" />
+          <NavigationProperty Name="UserFolder" Relationship="Eureka.Stroke.EurekaStrokeEntities.FK_UserFolder_FolderID" FromRole="Folder" ToRole="UserFolder" />
+        </EntityType>
+        <EntityType Name="Format">
+          <Key>
+            <PropertyRef Name="ID" />
+          </Key>
+          <Property Name="ID" Type="Int32" Nullable="false" />
+          <Property Name="Name" Type="String" Nullable="false" MaxLength="100" Unicode="false" FixedLength="false" />
+          <Property Name="IsNative" Type="Boolean" />
+          <Property Name="KeyFields" Type="String" MaxLength="1024" Unicode="false" FixedLength="false" />
+          <Property Name="Status" Type="Int16" />
+          <NavigationProperty Name="AlienField" Relationship="Eureka.Stroke.EurekaStrokeEntities.FK_AlienField_Format" FromRole="Format" ToRole="AlienField" />
+          <NavigationProperty Name="AlienValue" Relationship="Eureka.Stroke.EurekaStrokeEntities.FK_AlienValue_Format" FromRole="Format" ToRole="AlienValue" />
+          <NavigationProperty Name="EurekaField" Relationship="Eureka.Stroke.EurekaStrokeEntities.FK_EurekaField_Format" FromRole="Format" ToRole="EurekaField" />
+          <NavigationProperty Name="Facility" Relationship="Eureka.Stroke.EurekaStrokeEntities.FK_Facility_Format" FromRole="Format" ToRole="Facility" />
+          <NavigationProperty Name="UploadLog" Relationship="Eureka.Stroke.EurekaStrokeEntities.FK_UploadLog_Format" FromRole="Format" ToRole="UploadLog" />
+          <NavigationProperty Name="KeyEurekaField" Relationship="Eureka.Stroke.EurekaStrokeEntities.KeyEurekaField" FromRole="Format" ToRole="EurekaField" />
+        </EntityType>
+        <EntityType Name="Report">
+          <Key>
+            <PropertyRef Name="ID" />
+          </Key>
+          <Property Name="ID" Type="Int32" Nullable="false" />
+          <Property Name="Name" Type="String" Nullable="false" MaxLength="128" Unicode="false" FixedLength="false" />
+          <Property Name="Description" Type="String" MaxLength="Max" Unicode="false" FixedLength="false" />
+          <Property Name="Enabled" Type="Boolean" Nullable="false" />
+          <Property Name="RSName" Type="String" Nullable="false" MaxLength="128" Unicode="false" FixedLength="false" />
+          <NavigationProperty Name="Folder" Relationship="Eureka.Stroke.EurekaStrokeEntities.FK_Report_FolderID" FromRole="Report" ToRole="Folder" />
+          <NavigationProperty Name="UserReport" Relationship="Eureka.Stroke.EurekaStrokeEntities.FK_UserReport_ReportID" FromRole="Report" ToRole="UserReport" />
+        </EntityType>
+        <EntityType Name="StrokeData">
+          <Key>
+            <PropertyRef Name="ID" />
+          </Key>
+          <Property Name="ID" Type="Int32" Nullable="false" />
+          <Property Name="PatientID" Type="String" Nullable="false" MaxLength="256" Unicode="false" FixedLength="false" />
+          <Property Name="CreatedDate" Type="DateTime" />
+          <Property Name="CreatedBy" Type="Int32" />
+          <Property Name="LastModifiedDate" Type="DateTime" />
+          <Property Name="LastModifiedBy" Type="Int32" />
+          <Property Name="Status" Type="Int16" />
+          <Property Name="AdmissionDate" Type="DateTime" Nullable="false" />
+          <Property Name="ReportingSource" Type="String" MaxLength="128" Unicode="false" FixedLength="false" />
+          <NavigationProperty Name="BusinessRuleCheckResults" Relationship="Eureka.Stroke.EurekaStrokeEntities.BusinessRuleCheckResults_fk" FromRole="StrokeData" ToRole="BusinessRuleCheckResults" />
+          <NavigationProperty Name="StrokeFieldValue" Relationship="Eureka.Stroke.EurekaStrokeEntities.FK_StrokeFieldValue_StrokeData" FromRole="StrokeData" ToRole="StrokeFieldValue" />
+          <NavigationProperty Name="UploadLog" Relationship="Eureka.Stroke.EurekaStrokeEntities.UploadLogStrokeData" FromRole="StrokeData" ToRole="UploadLog" />
+        </EntityType>
+        <EntityType Name="StrokeFieldValue">
+          <Key>
+            <PropertyRef Name="ID" />
+          </Key>
+          <Property Name="ID" Type="Int32" Nullable="false" />
+          <Property Name="IntegerValue" Type="Int32" />
+          <Property Name="BooleanValue" Type="Boolean" />
+          <Property Name="StringValue" Type="String" MaxLength="Max" Unicode="false" FixedLength="false" />
+          <Property Name="DateTimeValue" Type="DateTime" />
+          <Property Name="DecimalValue" Type="Decimal" Precision="19" Scale="6" />
+          <Property Name="RawValue" Type="String" MaxLength="Max" Unicode="false" FixedLength="false" />
+          <Property Name="CreatedDate" Type="DateTime" />
+          <Property Name="CreatedBy" Type="Int32" />
+          <Property Name="LastModifiedBy" Type="Int32" />
+          <Property Name="LastModifiedDate" Type="DateTime" />
+          <Property Name="Status" Type="Int16" />
+          <NavigationProperty Name="AuditLog" Relationship="Eureka.Stroke.EurekaStrokeEntities.FK_AuditLog_StrokeFieldValue" FromRole="StrokeFieldValue" ToRole="AuditLog" />
+          <NavigationProperty Name="EurekaField" Relationship="Eureka.Stroke.EurekaStrokeEntities.FK_StrokeFieldValue_EurekaField" FromRole="StrokeFieldValue" ToRole="EurekaField" />
+          <NavigationProperty Name="StrokeData" Relationship="Eureka.Stroke.EurekaStrokeEntities.FK_StrokeFieldValue_StrokeData" FromRole="StrokeFieldValue" ToRole="StrokeData" />
+        </EntityType>
+        <EntityType Name="UploadLog">
+          <Key>
+            <PropertyRef Name="ID" />
+          </Key>
+          <Property Name="ID" Type="Int32" Nullable="false" />
+          <Property Name="Filename" Type="String" Nullable="false" MaxLength="100" Unicode="false" FixedLength="false" />
+          <Property Name="Status" Type="Int32" />
+          <Property Name="ErrorCount" Type="Int32" />
+          <Property Name="ChangesCount" Type="Int32" />
+          <Property Name="TotalCount" Type="Int32" />
+          <Property Name="StartedDate" Type="DateTime" />
+          <Property Name="CompletionDate" Type="DateTime" />
+          <Property Name="StartedBy" Type="Int32" />
+          <Property Name="CorrectionsCount" Type="Int32" />
+          <Property Name="OriginalFilename" Type="String" Nullable="false" MaxLength="100" Unicode="false" FixedLength="false" />
+          <NavigationProperty Name="AuditLog" Relationship="Eureka.Stroke.EurekaStrokeEntities.FK_AuditLog_UploadLog" FromRole="UploadLog" ToRole="AuditLog" />
+          <NavigationProperty Name="Facility" Relationship="Eureka.Stroke.EurekaStrokeEntities.FK_UploadLog_FacilityID" FromRole="UploadLog" ToRole="Facility" />
+          <NavigationProperty Name="Format" Relationship="Eureka.Stroke.EurekaStrokeEntities.FK_UploadLog_Format" FromRole="UploadLog" ToRole="Format" />
+          <NavigationProperty Name="StrokeData" Relationship="Eureka.Stroke.EurekaStrokeEntities.UploadLogStrokeData" FromRole="UploadLog" ToRole="StrokeData" />
+        </EntityType>
+        <EntityType Name="UserFacility">
+          <Key>
+            <PropertyRef Name="FacilityID" />
+            <PropertyRef Name="UserID" />
+          </Key>
+          <Property Name="FacilityID" Type="Int32" Nullable="false" />
+          <Property Name="UserID" Type="Int32" Nullable="false" />
+          <NavigationProperty Name="Facility" Relationship="Eureka.Stroke.EurekaStrokeEntities.FK_UserFacility_FacilityID" FromRole="UserFacility" ToRole="Facility" />
+        </EntityType>
+        <EntityType Name="UserFolder">
+          <Key>
+            <PropertyRef Name="FolderID" />
+            <PropertyRef Name="UserID" />
+          </Key>
+          <Property Name="FolderID" Type="Int32" Nullable="false" />
+          <Property Name="UserID" Type="Int32" Nullable="false" />
+          <NavigationProperty Name="Folder" Relationship="Eureka.Stroke.EurekaStrokeEntities.FK_UserFolder_FolderID" FromRole="UserFolder" ToRole="Folder" />
+        </EntityType>
+        <EntityType Name="UserReport">
+          <Key>
+            <PropertyRef Name="ReportID" />
+            <PropertyRef Name="UserID" />
+          </Key>
+          <Property Name="ReportID" Type="Int32" Nullable="false" />
+          <Property Name="UserID" Type="Int32" Nullable="false" />
+          <NavigationProperty Name="Report" Relationship="Eureka.Stroke.EurekaStrokeEntities.FK_UserReport_ReportID" FromRole="UserReport" ToRole="Report" />
+        </EntityType>
+        <EntityType Name="UserReportingSource">
+          <Key>
+            <PropertyRef Name="ReportingSource" />
+            <PropertyRef Name="UserID" />
+          </Key>
+          <Property Name="ReportingSource" Type="String" Nullable="false" MaxLength="128" Unicode="false" FixedLength="false" />
+          <Property Name="UserID" Type="Int32" Nullable="false" />
+        </EntityType>
+        <EntityType Name="StrokeUser">
+          <Key>
+            <PropertyRef Name="ID" />
+            <PropertyRef Name="UserName" />
+          </Key>
+          <Property Name="ID" Type="Int32" Nullable="false" />
+          <Property Name="UserName" Type="String" Nullable="false" MaxLength="8" Unicode="false" FixedLength="false" />
+        </EntityType>
+        <Association Name="FK_AlienField_EurekaField">
+          <End Role="EurekaField" Type="Eureka.Stroke.EurekaStrokeEntities.EurekaField" Multiplicity="1" />
+          <End Role="AlienField" Type="Eureka.Stroke.EurekaStrokeEntities.AlienField" Multiplicity="*" />
+        </Association>
+        <Association Name="FK_AlienField_Format">
+          <End Role="Format" Type="Eureka.Stroke.EurekaStrokeEntities.Format" Multiplicity="1" />
+          <End Role="AlienField" Type="Eureka.Stroke.EurekaStrokeEntities.AlienField" Multiplicity="*" />
+        </Association>
+        <Association Name="FK_AlienValue_EurekaField">
+          <End Role="EurekaField" Type="Eureka.Stroke.EurekaStrokeEntities.EurekaField" Multiplicity="1" />
+          <End Role="AlienValue" Type="Eureka.Stroke.EurekaStrokeEntities.AlienValue" Multiplicity="*" />
+        </Association>
+        <Association Name="FK_AlienValue_EurekaValue">
+          <End Role="EurekaValue" Type="Eureka.Stroke.EurekaStrokeEntities.EurekaValue" Multiplicity="0..1" />
+          <End Role="AlienValue" Type="Eureka.Stroke.EurekaStrokeEntities.AlienValue" Multiplicity="*" />
+        </Association>
+        <Association Name="FK_AlienValue_Format">
+          <End Role="Format" Type="Eureka.Stroke.EurekaStrokeEntities.Format" Multiplicity="1" />
+          <End Role="AlienValue" Type="Eureka.Stroke.EurekaStrokeEntities.AlienValue" Multiplicity="*" />
+        </Association>
+        <Association Name="FK_AuditLog_StrokeFieldValue">
+          <End Role="StrokeFieldValue" Type="Eureka.Stroke.EurekaStrokeEntities.StrokeFieldValue" Multiplicity="0..1" />
+          <End Role="AuditLog" Type="Eureka.Stroke.EurekaStrokeEntities.AuditLog" Multiplicity="*" />
+        </Association>
+        <Association Name="FK_AuditLog_UploadLog">
+          <End Role="UploadLog" Type="Eureka.Stroke.EurekaStrokeEntities.UploadLog" Multiplicity="0..1" />
+          <End Role="AuditLog" Type="Eureka.Stroke.EurekaStrokeEntities.AuditLog" Multiplicity="*" />
+        </Association>
+        <Association Name="BusinessRuleCheckResults_fk">
+          <End Role="StrokeData" Type="Eureka.Stroke.EurekaStrokeEntities.StrokeData" Multiplicity="1" />
+          <End Role="BusinessRuleCheckResults" Type="Eureka.Stroke.EurekaStrokeEntities.BusinessRuleCheckResults" Multiplicity="*" />
+        </Association>
+        <Association Name="FK_EurekaField_Format">
+          <End Role="Format" Type="Eureka.Stroke.EurekaStrokeEntities.Format" Multiplicity="1" />
+          <End Role="EurekaField" Type="Eureka.Stroke.EurekaStrokeEntities.EurekaField" Multiplicity="*" />
+        </Association>
+        <Association Name="FK_EurekaValue_EurekaField">
+          <End Role="EurekaField" Type="Eureka.Stroke.EurekaStrokeEntities.EurekaField" Multiplicity="1" />
+          <End Role="EurekaValue" Type="Eureka.Stroke.EurekaStrokeEntities.EurekaValue" Multiplicity="*" />
+        </Association>
+        <Association Name="FK_StrokeFieldValue_EurekaField">
+          <End Role="EurekaField" Type="Eureka.Stroke.EurekaStrokeEntities.EurekaField" Multiplicity="1" />
+          <End Role="StrokeFieldValue" Type="Eureka.Stroke.EurekaStrokeEntities.StrokeFieldValue" Multiplicity="*" />
+        </Association>
+        <Association Name="FK_Facility_Format">
+          <End Role="Format" Type="Eureka.Stroke.EurekaStrokeEntities.Format" Multiplicity="0..1" />
+          <End Role="Facility" Type="Eureka.Stroke.EurekaStrokeEntities.Facility" Multiplicity="*" />
+        </Association>
+        <Association Name="FK_UploadLog_FacilityID">
+          <End Role="Facility" Type="Eureka.Stroke.EurekaStrokeEntities.Facility" Multiplicity="1" />
+          <End Role="UploadLog" Type="Eureka.Stroke.EurekaStrokeEntities.UploadLog" Multiplicity="*" />
+        </Association>
+        <Association Name="FK_UserFacility_FacilityID">
+          <End Role="Facility" Type="Eureka.Stroke.EurekaStrokeEntities.Facility" Multiplicity="1" />
+          <End Role="UserFacility" Type="Eureka.Stroke.EurekaStrokeEntities.UserFacility" Multiplicity="*" />
+          <ReferentialConstraint>
+            <Principal Role="Facility">
+              <PropertyRef Name="ID" />
+            </Principal>
+            <Dependent Role="UserFacility">
+              <PropertyRef Name="FacilityID" />
+            </Dependent>
+          </ReferentialConstraint>
+        </Association>
+        <Association Name="FK_Report_FolderID">
+          <End Role="Folder" Type="Eureka.Stroke.EurekaStrokeEntities.Folder" Multiplicity="1" />
+          <End Role="Report" Type="Eureka.Stroke.EurekaStrokeEntities.Report" Multiplicity="*" />
+        </Association>
+        <Association Name="FK_UserFolder_FolderID">
+          <End Role="Folder" Type="Eureka.Stroke.EurekaStrokeEntities.Folder" Multiplicity="1" />
+          <End Role="UserFolder" Type="Eureka.Stroke.EurekaStrokeEntities.UserFolder" Multiplicity="*" />
+          <ReferentialConstraint>
+            <Principal Role="Folder">
+              <PropertyRef Name="ID" />
+            </Principal>
+            <Dependent Role="UserFolder">
+              <PropertyRef Name="FolderID" />
+            </Dependent>
+          </ReferentialConstraint>
+        </Association>
+        <Association Name="FK_UploadLog_Format">
+          <End Role="Format" Type="Eureka.Stroke.EurekaStrokeEntities.Format" Multiplicity="0..1" />
+          <End Role="UploadLog" Type="Eureka.Stroke.EurekaStrokeEntities.UploadLog" Multiplicity="*" />
+        </Association>
+        <Association Name="FK_UserReport_ReportID">
+          <End Role="Report" Type="Eureka.Stroke.EurekaStrokeEntities.Report" Multiplicity="1" />
+          <End Role="UserReport" Type="Eureka.Stroke.EurekaStrokeEntities.UserReport" Multiplicity="*" />
+          <ReferentialConstraint>
+            <Principal Role="Report">
+              <PropertyRef Name="ID" />
+            </Principal>
+            <Dependent Role="UserReport">
+              <PropertyRef Name="ReportID" />
+            </Dependent>
+          </ReferentialConstraint>
+        </Association>
+        <Association Name="FK_StrokeFieldValue_StrokeData">
+          <End Role="StrokeData" Type="Eureka.Stroke.EurekaStrokeEntities.StrokeData" Multiplicity="1" />
+          <End Role="StrokeFieldValue" Type="Eureka.Stroke.EurekaStrokeEntities.StrokeFieldValue" Multiplicity="*" />
+        </Association>
+        <Association Name="KeyEurekaField">
+          <End Role="EurekaField" Type="Eureka.Stroke.EurekaStrokeEntities.EurekaField" Multiplicity="*" />
+          <End Role="Format" Type="Eureka.Stroke.EurekaStrokeEntities.Format" Multiplicity="*" />
+        </Association>
+        <Association Name="UploadLogStrokeData">
+          <End Role="StrokeData" Type="Eureka.Stroke.EurekaStrokeEntities.StrokeData" Multiplicity="*" />
+          <End Role="UploadLog" Type="Eureka.Stroke.EurekaStrokeEntities.UploadLog" Multiplicity="*" />
+        </Association>
+      </Schema>
+    </edmx:ConceptualModels>
+    <!-- C-S mapping content -->
+    <edmx:Mappings>
+      <Mapping Space="C-S" xmlns="urn:schemas-microsoft-com:windows:storage:mapping:CS">
+        <EntityContainerMapping StorageEntityContainer="EurekaStrokeEurekaStrokeEntitiesStoreContainer" CdmEntityContainer="EurekaStrokeEntities">
+          <EntitySetMapping Name="AlienField">
+            <EntityTypeMapping TypeName="IsTypeOf(Eureka.Stroke.EurekaStrokeEntities.AlienField)">
+              <MappingFragment StoreEntitySet="AlienField">
+                <ScalarProperty Name="ID" ColumnName="ID" />
+                <ScalarProperty Name="Name" ColumnName="Name" />
+                <ScalarProperty Name="RegularExpression" ColumnName="RegularExpression" />
+                <ScalarProperty Name="CreatedBy" ColumnName="CreatedBy" />
+                <ScalarProperty Name="LastModifiedBy" ColumnName="LastModifiedBy" />
+                <ScalarProperty Name="CreatedDate" ColumnName="CreatedDate" />
+                <ScalarProperty Name="LastModifiedDate" ColumnName="LastModifiedDate" />
+              </MappingFragment>
+            </EntityTypeMapping>
+          </EntitySetMapping>
+          <EntitySetMapping Name="AlienValue">
+            <EntityTypeMapping TypeName="IsTypeOf(Eureka.Stroke.EurekaStrokeEntities.AlienValue)">
+              <MappingFragment StoreEntitySet="AlienValue">
+                <ScalarProperty Name="ID" ColumnName="ID" />
+                <ScalarProperty Name="Value" ColumnName="Value" />
+                <ScalarProperty Name="CreatedBy" ColumnName="CreatedBy" />
+                <ScalarProperty Name="LastModifiedBy" ColumnName="LastModifiedBy" />
+                <ScalarProperty Name="CreatedDate" ColumnName="CreatedDate" />
+                <ScalarProperty Name="LastModifiedDate" ColumnName="LastModifiedDate" />
+                <ScalarProperty Name="Description" ColumnName="Description" />
+              </MappingFragment>
+            </EntityTypeMapping>
+          </EntitySetMapping>
+          <EntitySetMapping Name="AuditLog">
+            <EntityTypeMapping TypeName="IsTypeOf(Eureka.Stroke.EurekaStrokeEntities.AuditLog)">
+              <MappingFragment StoreEntitySet="AuditLog">
+                <ScalarProperty Name="ID" ColumnName="ID" />
+                <ScalarProperty Name="Action" ColumnName="Action" />
+                <ScalarProperty Name="ActionDate" ColumnName="ActionDate" />
+                <ScalarProperty Name="ActionUser" ColumnName="ActionUser" />
+                <ScalarProperty Name="OldValue" ColumnName="OldValue" />
+                <ScalarProperty Name="NextValue" ColumnName="NextValue" />
+                <ScalarProperty Name="Status" ColumnName="Status" />
+                <ScalarProperty Name="FieldName" ColumnName="FieldName" />
+                <ScalarProperty Name="RowNumber" ColumnName="RowNumber" />
+                <ScalarProperty Name="ErrorMessage" ColumnName="ErrorMessage" />
+                <ScalarProperty Name="ItemType" ColumnName="ItemType" />
+              </MappingFragment>
+            </EntityTypeMapping>
+          </EntitySetMapping>
+          <EntitySetMapping Name="BusinessRuleCheckResults">
+            <EntityTypeMapping TypeName="IsTypeOf(Eureka.Stroke.EurekaStrokeEntities.BusinessRuleCheckResults)">
+              <MappingFragment StoreEntitySet="BusinessRuleCheckResults">
+                <ScalarProperty Name="ID" ColumnName="ID" />
+                <ScalarProperty Name="RuleID" ColumnName="RuleID" />
+                <ScalarProperty Name="RuleBreaker" ColumnName="RuleBreaker" />
+                <ScalarProperty Name="ErrorMessage" ColumnName="ErrorMessage" />
+              </MappingFragment>
+            </EntityTypeMapping>
+          </EntitySetMapping>
+          <EntitySetMapping Name="EurekaField">
+            <EntityTypeMapping TypeName="IsTypeOf(Eureka.Stroke.EurekaStrokeEntities.EurekaField)">
+              <MappingFragment StoreEntitySet="EurekaField">
+                <ScalarProperty Name="ID" ColumnName="ID" />
+                <ScalarProperty Name="Name" ColumnName="Name" />
+                <ScalarProperty Name="FieldType" ColumnName="FieldType" />
+                <ScalarProperty Name="Description" ColumnName="Description" />
+                <ScalarProperty Name="IsMandatory" ColumnName="IsMandatory" />
+                <ScalarProperty Name="CreatedBy" ColumnName="CreatedBy" />
+                <ScalarProperty Name="LastModifiedBy" ColumnName="LastModifiedBy" />
+                <ScalarProperty Name="CreatedDate" ColumnName="CreatedDate" />
+                <ScalarProperty Name="LastModifiedDate" ColumnName="LastModifiedDate" />
+                <ScalarProperty Name="IsNew" ColumnName="IsNew" />
+              </MappingFragment>
+            </EntityTypeMapping>
+          </EntitySetMapping>
+          <EntitySetMapping Name="EurekaValue">
+            <EntityTypeMapping TypeName="IsTypeOf(Eureka.Stroke.EurekaStrokeEntities.EurekaValue)">
+              <MappingFragment StoreEntitySet="EurekaValue">
+                <ScalarProperty Name="ID" ColumnName="ID" />
+                <ScalarProperty Name="Value" ColumnName="Value" />
+                <ScalarProperty Name="Description" ColumnName="Description" />
+                <ScalarProperty Name="CreatedBy" ColumnName="CreatedBy" />
+                <ScalarProperty Name="LastModifiedBy" ColumnName="LastModifiedBy" />
+                <ScalarProperty Name="CreatedDate" ColumnName="CreatedDate" />
+                <ScalarProperty Name="LastModifiedDate" ColumnName="LastModifiedDate" />
+              </MappingFragment>
+            </EntityTypeMapping>
+          </EntitySetMapping>
+          <EntitySetMapping Name="Facility">
+            <EntityTypeMapping TypeName="IsTypeOf(Eureka.Stroke.EurekaStrokeEntities.Facility)">
+              <MappingFragment StoreEntitySet="Facility">
+                <ScalarProperty Name="ID" ColumnName="ID" />
+                <ScalarProperty Name="Name" ColumnName="Name" />
+              </MappingFragment>
+            </EntityTypeMapping>
+          </EntitySetMapping>
+          <EntitySetMapping Name="Folder">
+            <EntityTypeMapping TypeName="IsTypeOf(Eureka.Stroke.EurekaStrokeEntities.Folder)">
+              <MappingFragment StoreEntitySet="Folder">
+                <ScalarProperty Name="ID" ColumnName="ID" />
+                <ScalarProperty Name="Name" ColumnName="Name" />
+                <ScalarProperty Name="Rank" ColumnName="Rank" />
+                <ScalarProperty Name="Enabled" ColumnName="Enabled" />
+              </MappingFragment>
+            </EntityTypeMapping>
+          </EntitySetMapping>
+          <EntitySetMapping Name="Format">
+            <EntityTypeMapping TypeName="IsTypeOf(Eureka.Stroke.EurekaStrokeEntities.Format)">
+              <MappingFragment StoreEntitySet="Format">
+                <ScalarProperty Name="ID" ColumnName="ID" />
+                <ScalarProperty Name="Name" ColumnName="Name" />
+                <ScalarProperty Name="IsNative" ColumnName="IsNative" />
+                <ScalarProperty Name="KeyFields" ColumnName="KeyFields" />
+                <ScalarProperty Name="Status" ColumnName="Status" />
+              </MappingFragment>
+            </EntityTypeMapping>
+          </EntitySetMapping>
+          <EntitySetMapping Name="Report">
+            <EntityTypeMapping TypeName="IsTypeOf(Eureka.Stroke.EurekaStrokeEntities.Report)">
+              <MappingFragment StoreEntitySet="Report">
+                <ScalarProperty Name="ID" ColumnName="ID" />
+                <ScalarProperty Name="Name" ColumnName="Name" />
+                <ScalarProperty Name="Description" ColumnName="Description" />
+                <ScalarProperty Name="Enabled" ColumnName="Enabled" />
+                <ScalarProperty Name="RSName" ColumnName="RSName" />
+              </MappingFragment>
+            </EntityTypeMapping>
+          </EntitySetMapping>
+          <EntitySetMapping Name="StrokeData">
+            <EntityTypeMapping TypeName="IsTypeOf(Eureka.Stroke.EurekaStrokeEntities.StrokeData)">
+              <MappingFragment StoreEntitySet="StrokeData">
+                <ScalarProperty Name="ID" ColumnName="ID" />
+                <ScalarProperty Name="PatientID" ColumnName="PatientID" />
+                <ScalarProperty Name="CreatedDate" ColumnName="CreatedDate" />
+                <ScalarProperty Name="CreatedBy" ColumnName="CreatedBy" />
+                <ScalarProperty Name="LastModifiedDate" ColumnName="LastModifiedDate" />
+                <ScalarProperty Name="LastModifiedBy" ColumnName="LastModifiedBy" />
+                <ScalarProperty Name="Status" ColumnName="Status" />
+                <ScalarProperty Name="AdmissionDate" ColumnName="AdmissionDate" />
+                <ScalarProperty Name="ReportingSource" ColumnName="ReportingSource" />
+              </MappingFragment>
+            </EntityTypeMapping>
+          </EntitySetMapping>
+          <EntitySetMapping Name="StrokeFieldValue">
+            <EntityTypeMapping TypeName="IsTypeOf(Eureka.Stroke.EurekaStrokeEntities.StrokeFieldValue)">
+              <MappingFragment StoreEntitySet="StrokeFieldValue">
+                <ScalarProperty Name="ID" ColumnName="ID" />
+                <ScalarProperty Name="IntegerValue" ColumnName="IntegerValue" />
+                <ScalarProperty Name="BooleanValue" ColumnName="BooleanValue" />
+                <ScalarProperty Name="StringValue" ColumnName="StringValue" />
+                <ScalarProperty Name="DateTimeValue" ColumnName="DateTimeValue" />
+                <ScalarProperty Name="DecimalValue" ColumnName="DecimalValue" />
+                <ScalarProperty Name="RawValue" ColumnName="RawValue" />
+                <ScalarProperty Name="CreatedDate" ColumnName="CreatedDate" />
+                <ScalarProperty Name="CreatedBy" ColumnName="CreatedBy" />
+                <ScalarProperty Name="LastModifiedBy" ColumnName="LastModifiedBy" />
+                <ScalarProperty Name="LastModifiedDate" ColumnName="LastModifiedDate" />
+                <ScalarProperty Name="Status" ColumnName="Status" />
+              </MappingFragment>
+            </EntityTypeMapping>
+          </EntitySetMapping>
+          <EntitySetMapping Name="UploadLog">
+            <EntityTypeMapping TypeName="IsTypeOf(Eureka.Stroke.EurekaStrokeEntities.UploadLog)">
+              <MappingFragment StoreEntitySet="UploadLog">
+                <ScalarProperty Name="ID" ColumnName="ID" />
+                <ScalarProperty Name="Filename" ColumnName="Filename" />
+                <ScalarProperty Name="Status" ColumnName="Status" />
+                <ScalarProperty Name="ErrorCount" ColumnName="ErrorCount" />
+                <ScalarProperty Name="ChangesCount" ColumnName="ChangesCount" />
+                <ScalarProperty Name="TotalCount" ColumnName="TotalCount" />
+                <ScalarProperty Name="StartedDate" ColumnName="StartedDate" />
+                <ScalarProperty Name="CompletionDate" ColumnName="CompletionDate" />
+                <ScalarProperty Name="StartedBy" ColumnName="StartedBy" />
+                <ScalarProperty Name="CorrectionsCount" ColumnName="CorrectionsCount" />
+                <ScalarProperty Name="OriginalFilename" ColumnName="OriginalFilename" />
+              </MappingFragment>
+            </EntityTypeMapping>
+          </EntitySetMapping>
+          <EntitySetMapping Name="UserFacility">
+            <EntityTypeMapping TypeName="IsTypeOf(Eureka.Stroke.EurekaStrokeEntities.UserFacility)">
+              <MappingFragment StoreEntitySet="UserFacility">
+                <ScalarProperty Name="FacilityID" ColumnName="FacilityID" />
+                <ScalarProperty Name="UserID" ColumnName="UserID" />
+              </MappingFragment>
+            </EntityTypeMapping>
+          </EntitySetMapping>
+          <EntitySetMapping Name="UserFolder">
+            <EntityTypeMapping TypeName="IsTypeOf(Eureka.Stroke.EurekaStrokeEntities.UserFolder)">
+              <MappingFragment StoreEntitySet="UserFolder">
+                <ScalarProperty Name="FolderID" ColumnName="FolderID" />
+                <ScalarProperty Name="UserID" ColumnName="UserID" />
+              </MappingFragment>
+            </EntityTypeMapping>
+          </EntitySetMapping>
+          <EntitySetMapping Name="UserReport">
+            <EntityTypeMapping TypeName="IsTypeOf(Eureka.Stroke.EurekaStrokeEntities.UserReport)">
+              <MappingFragment StoreEntitySet="UserReport">
+                <ScalarProperty Name="ReportID" ColumnName="ReportID" />
+                <ScalarProperty Name="UserID" ColumnName="UserID" />
+              </MappingFragment>
+            </EntityTypeMapping>
+          </EntitySetMapping>
+          <EntitySetMapping Name="UserReportingSource">
+            <EntityTypeMapping TypeName="IsTypeOf(Eureka.Stroke.EurekaStrokeEntities.UserReportingSource)">
+              <MappingFragment StoreEntitySet="UserReportingSource">
+                <ScalarProperty Name="ReportingSource" ColumnName="ReportingSource" />
+                <ScalarProperty Name="UserID" ColumnName="UserID" />
+              </MappingFragment>
+            </EntityTypeMapping>
+          </EntitySetMapping>
+          <EntitySetMapping Name="StrokeUser">
+            <EntityTypeMapping TypeName="IsTypeOf(Eureka.Stroke.EurekaStrokeEntities.StrokeUser)">
+              <MappingFragment StoreEntitySet="StrokeUser">
+                <ScalarProperty Name="ID" ColumnName="ID" />
+                <ScalarProperty Name="UserName" ColumnName="UserName" />
+              </MappingFragment>
+            </EntityTypeMapping>
+          </EntitySetMapping>
+          <AssociationSetMapping Name="FK_AlienField_EurekaField" TypeName="Eureka.Stroke.EurekaStrokeEntities.FK_AlienField_EurekaField" StoreEntitySet="AlienField">
+            <EndProperty Name="EurekaField">
+              <ScalarProperty Name="ID" ColumnName="EurekaFieldID" />
+            </EndProperty>
+            <EndProperty Name="AlienField">
+              <ScalarProperty Name="ID" ColumnName="ID" />
+            </EndProperty>
+          </AssociationSetMapping>
+          <AssociationSetMapping Name="FK_AlienField_Format" TypeName="Eureka.Stroke.EurekaStrokeEntities.FK_AlienField_Format" StoreEntitySet="AlienField">
+            <EndProperty Name="Format">
+              <ScalarProperty Name="ID" ColumnName="FormatID" />
+            </EndProperty>
+            <EndProperty Name="AlienField">
+              <ScalarProperty Name="ID" ColumnName="ID" />
+            </EndProperty>
+          </AssociationSetMapping>
+          <AssociationSetMapping Name="FK_AlienValue_EurekaField" TypeName="Eureka.Stroke.EurekaStrokeEntities.FK_AlienValue_EurekaField" StoreEntitySet="AlienValue">
+            <EndProperty Name="EurekaField">
+              <ScalarProperty Name="ID" ColumnName="EurekaFieldID" />
+            </EndProperty>
+            <EndProperty Name="AlienValue">
+              <ScalarProperty Name="ID" ColumnName="ID" />
+            </EndProperty>
+          </AssociationSetMapping>
+          <AssociationSetMapping Name="FK_AlienValue_EurekaValue" TypeName="Eureka.Stroke.EurekaStrokeEntities.FK_AlienValue_EurekaValue" StoreEntitySet="AlienValue">
+            <EndProperty Name="EurekaValue">
+              <ScalarProperty Name="ID" ColumnName="EurekaValueID" />
+            </EndProperty>
+            <EndProperty Name="AlienValue">
+              <ScalarProperty Name="ID" ColumnName="ID" />
+            </EndProperty>
+            <Condition ColumnName="EurekaValueID" IsNull="false" />
+          </AssociationSetMapping>
+          <AssociationSetMapping Name="FK_AlienValue_Format" TypeName="Eureka.Stroke.EurekaStrokeEntities.FK_AlienValue_Format" StoreEntitySet="AlienValue">
+            <EndProperty Name="Format">
+              <ScalarProperty Name="ID" ColumnName="FormatID" />
+            </EndProperty>
+            <EndProperty Name="AlienValue">
+              <ScalarProperty Name="ID" ColumnName="ID" />
+            </EndProperty>
+          </AssociationSetMapping>
+          <AssociationSetMapping Name="FK_AuditLog_StrokeFieldValue" TypeName="Eureka.Stroke.EurekaStrokeEntities.FK_AuditLog_StrokeFieldValue" StoreEntitySet="AuditLog">
+            <EndProperty Name="StrokeFieldValue">
+              <ScalarProperty Name="ID" ColumnName="FieldValueID" />
+            </EndProperty>
+            <EndProperty Name="AuditLog">
+              <ScalarProperty Name="ID" ColumnName="ID" />
+            </EndProperty>
+            <Condition ColumnName="FieldValueID" IsNull="false" />
+          </AssociationSetMapping>
+          <AssociationSetMapping Name="FK_AuditLog_UploadLog" TypeName="Eureka.Stroke.EurekaStrokeEntities.FK_AuditLog_UploadLog" StoreEntitySet="AuditLog">
+            <EndProperty Name="UploadLog">
+              <ScalarProperty Name="ID" ColumnName="UploadLogID" />
+            </EndProperty>
+            <EndProperty Name="AuditLog">
+              <ScalarProperty Name="ID" ColumnName="ID" />
+            </EndProperty>
+            <Condition ColumnName="UploadLogID" IsNull="false" />
+          </AssociationSetMapping>
+          <AssociationSetMapping Name="BusinessRuleCheckResults_fk" TypeName="Eureka.Stroke.EurekaStrokeEntities.BusinessRuleCheckResults_fk" StoreEntitySet="BusinessRuleCheckResults">
+            <EndProperty Name="StrokeData">
+              <ScalarProperty Name="ID" ColumnName="StrokeDataID" />
+            </EndProperty>
+            <EndProperty Name="BusinessRuleCheckResults">
+              <ScalarProperty Name="ID" ColumnName="ID" />
+            </EndProperty>
+          </AssociationSetMapping>
+          <AssociationSetMapping Name="FK_EurekaField_Format" TypeName="Eureka.Stroke.EurekaStrokeEntities.FK_EurekaField_Format" StoreEntitySet="EurekaField">
+            <EndProperty Name="Format">
+              <ScalarProperty Name="ID" ColumnName="FormatID" />
+            </EndProperty>
+            <EndProperty Name="EurekaField">
+              <ScalarProperty Name="ID" ColumnName="ID" />
+            </EndProperty>
+          </AssociationSetMapping>
+          <AssociationSetMapping Name="FK_EurekaValue_EurekaField" TypeName="Eureka.Stroke.EurekaStrokeEntities.FK_EurekaValue_EurekaField" StoreEntitySet="EurekaValue">
+            <EndProperty Name="EurekaField">
+              <ScalarProperty Name="ID" ColumnName="EurekaFieldID" />
+            </EndProperty>
+            <EndProperty Name="EurekaValue">
+              <ScalarProperty Name="ID" ColumnName="ID" />
+            </EndProperty>
+          </AssociationSetMapping>
+          <AssociationSetMapping Name="FK_StrokeFieldValue_EurekaField" TypeName="Eureka.Stroke.EurekaStrokeEntities.FK_StrokeFieldValue_EurekaField" StoreEntitySet="StrokeFieldValue">
+            <EndProperty Name="EurekaField">
+              <ScalarProperty Name="ID" ColumnName="FieldID" />
+            </EndProperty>
+            <EndProperty Name="StrokeFieldValue">
+              <ScalarProperty Name="ID" ColumnName="ID" />
+            </EndProperty>
+          </AssociationSetMapping>
+          <AssociationSetMapping Name="FK_Facility_Format" TypeName="Eureka.Stroke.EurekaStrokeEntities.FK_Facility_Format" StoreEntitySet="Facility">
+            <EndProperty Name="Format">
+              <ScalarProperty Name="ID" ColumnName="FormatID" />
+            </EndProperty>
+            <EndProperty Name="Facility">
+              <ScalarProperty Name="ID" ColumnName="ID" />
+            </EndProperty>
+            <Condition ColumnName="FormatID" IsNull="false" />
+          </AssociationSetMapping>
+          <AssociationSetMapping Name="FK_UploadLog_FacilityID" TypeName="Eureka.Stroke.EurekaStrokeEntities.FK_UploadLog_FacilityID" StoreEntitySet="UploadLog">
+            <EndProperty Name="Facility">
+              <ScalarProperty Name="ID" ColumnName="FacilityID" />
+            </EndProperty>
+            <EndProperty Name="UploadLog">
+              <ScalarProperty Name="ID" ColumnName="ID" />
+            </EndProperty>
+          </AssociationSetMapping>
+          <AssociationSetMapping Name="FK_UserFacility_FacilityID" TypeName="Eureka.Stroke.EurekaStrokeEntities.FK_UserFacility_FacilityID" StoreEntitySet="UserFacility">
+            <EndProperty Name="Facility">
+              <ScalarProperty Name="ID" ColumnName="FacilityID" />
+            </EndProperty>
+            <EndProperty Name="UserFacility">
+              <ScalarProperty Name="FacilityID" ColumnName="FacilityID" />
+              <ScalarProperty Name="UserID" ColumnName="UserID" />
+            </EndProperty>
+          </AssociationSetMapping>
+          <AssociationSetMapping Name="FK_Report_FolderID" TypeName="Eureka.Stroke.EurekaStrokeEntities.FK_Report_FolderID" StoreEntitySet="Report">
+            <EndProperty Name="Folder">
+              <ScalarProperty Name="ID" ColumnName="FolderID" />
+            </EndProperty>
+            <EndProperty Name="Report">
+              <ScalarProperty Name="ID" ColumnName="ID" />
+            </EndProperty>
+          </AssociationSetMapping>
+          <AssociationSetMapping Name="FK_UserFolder_FolderID" TypeName="Eureka.Stroke.EurekaStrokeEntities.FK_UserFolder_FolderID" StoreEntitySet="UserFolder">
+            <EndProperty Name="Folder">
+              <ScalarProperty Name="ID" ColumnName="FolderID" />
+            </EndProperty>
+            <EndProperty Name="UserFolder">
+              <ScalarProperty Name="FolderID" ColumnName="FolderID" />
+              <ScalarProperty Name="UserID" ColumnName="UserID" />
+            </EndProperty>
+          </AssociationSetMapping>
+          <AssociationSetMapping Name="FK_UploadLog_Format" TypeName="Eureka.Stroke.EurekaStrokeEntities.FK_UploadLog_Format" StoreEntitySet="UploadLog">
+            <EndProperty Name="Format">
+              <ScalarProperty Name="ID" ColumnName="FormatID" />
+            </EndProperty>
+            <EndProperty Name="UploadLog">
+              <ScalarProperty Name="ID" ColumnName="ID" />
+            </EndProperty>
+            <Condition ColumnName="FormatID" IsNull="false" />
+          </AssociationSetMapping>
+          <AssociationSetMapping Name="FK_UserReport_ReportID" TypeName="Eureka.Stroke.EurekaStrokeEntities.FK_UserReport_ReportID" StoreEntitySet="UserReport">
+            <EndProperty Name="Report">
+              <ScalarProperty Name="ID" ColumnName="ReportID" />
+            </EndProperty>
+            <EndProperty Name="UserReport">
+              <ScalarProperty Name="ReportID" ColumnName="ReportID" />
+              <ScalarProperty Name="UserID" ColumnName="UserID" />
+            </EndProperty>
+          </AssociationSetMapping>
+          <AssociationSetMapping Name="FK_StrokeFieldValue_StrokeData" TypeName="Eureka.Stroke.EurekaStrokeEntities.FK_StrokeFieldValue_StrokeData" StoreEntitySet="StrokeFieldValue">
+            <EndProperty Name="StrokeData">
+              <ScalarProperty Name="ID" ColumnName="StrokeDataID" />
+            </EndProperty>
+            <EndProperty Name="StrokeFieldValue">
+              <ScalarProperty Name="ID" ColumnName="ID" />
+            </EndProperty>
+          </AssociationSetMapping>
+          <AssociationSetMapping Name="KeyEurekaField" TypeName="Eureka.Stroke.EurekaStrokeEntities.KeyEurekaField" StoreEntitySet="KeyEurekaField">
+            <EndProperty Name="EurekaField">
+              <ScalarProperty Name="ID" ColumnName="EurekaFieldID" />
+            </EndProperty>
+            <EndProperty Name="Format">
+              <ScalarProperty Name="ID" ColumnName="FormatID" />
+            </EndProperty>
+          </AssociationSetMapping>
+          <AssociationSetMapping Name="UploadLogStrokeData" TypeName="Eureka.Stroke.EurekaStrokeEntities.UploadLogStrokeData" StoreEntitySet="UploadLogStrokeData">
+            <EndProperty Name="StrokeData">
+              <ScalarProperty Name="ID" ColumnName="StrokeDataID" />
+            </EndProperty>
+            <EndProperty Name="UploadLog">
+              <ScalarProperty Name="ID" ColumnName="UploadLogID" />
+            </EndProperty>
+          </AssociationSetMapping>
+        </EntityContainerMapping>
+      </Mapping>
+    </edmx:Mappings>
+  </edmx:Runtime>
+  <!-- EF Designer content (DO NOT EDIT MANUALLY BELOW HERE) -->
+  <edmx:Designer xmlns="http://schemas.microsoft.com/ado/2007/06/edmx">
+    <edmx:Connection>
+      <DesignerInfoPropertySet>
+        <DesignerProperty Name="MetadataArtifactProcessing" Value="EmbedInOutputAssembly" />
+      </DesignerInfoPropertySet>
+    </edmx:Connection>
+    <edmx:Options>
+      <DesignerInfoPropertySet>
+        <DesignerProperty Name="ValidateOnBuild" Value="true" />
+      </DesignerInfoPropertySet>
+    </edmx:Options>
+    <!-- Diagram content (shape and connector positions) -->
+    <edmx:Diagrams>
+      <Diagram Name="EurekaStroke">
+        <EntityTypeShape EntityType="Eureka.Stroke.EurekaStrokeEntities.AlienField" Width="1.5" PointX="5.25" PointY="15.5" Height="2.7494921875000014" IsExpanded="true" />
+        <EntityTypeShape EntityType="Eureka.Stroke.EurekaStrokeEntities.AlienValue" Width="1.5" PointX="8.25" PointY="15.5" Height="2.9417936197916674" IsExpanded="true" />
+        <EntityTypeShape EntityType="Eureka.Stroke.EurekaStrokeEntities.AuditLog" Width="1.5" PointX="12.75" PointY="13.875" Height="3.5186979166666674" IsExpanded="true" />
+        <EntityTypeShape EntityType="Eureka.Stroke.EurekaStrokeEntities.BusinessRuleCheckResults" Width="1.5" PointX="3" PointY="16.75" Height="1.9802864583333317" IsExpanded="true" />
+        <EntityTypeShape EntityType="Eureka.Stroke.EurekaStrokeEntities.EurekaField" Width="1.5" PointX="0.75" PointY="10.625" Height="4.0956022135416674" IsExpanded="true" />
+        <EntityTypeShape EntityType="Eureka.Stroke.EurekaStrokeEntities.EurekaValue" Width="1.5" PointX="3" PointY="12.875" Height="2.7494921874999996" IsExpanded="true" />
+        <EntityTypeShape EntityType="Eureka.Stroke.EurekaStrokeEntities.Facility" Width="1.5" PointX="5.25" PointY="20.625" Height="1.9802864583333317" IsExpanded="true" />
+        <EntityTypeShape EntityType="Eureka.Stroke.EurekaStrokeEntities.Folder" Width="1.5" PointX="2.75" PointY="2.375" Height="2.1725878906249996" IsExpanded="true" />
+        <EntityTypeShape EntityType="Eureka.Stroke.EurekaStrokeEntities.Format" Width="1.5" PointX="3" PointY="20.125" Height="3.1340950520833317" IsExpanded="true" />
+        <EntityTypeShape EntityType="Eureka.Stroke.EurekaStrokeEntities.Report" Width="1.5" PointX="5" PointY="3.375" Height="2.3648893229166656" IsExpanded="true" />
+        <EntityTypeShape EntityType="Eureka.Stroke.EurekaStrokeEntities.StrokeData" Width="1.5" PointX="0.75" PointY="6" Height="3.3263964843749996" IsExpanded="true" />
+        <EntityTypeShape EntityType="Eureka.Stroke.EurekaStrokeEntities.StrokeFieldValue" Width="1.5" PointX="3" PointY="7.75" Height="3.9033007812499996" IsExpanded="true" />
+        <EntityTypeShape EntityType="Eureka.Stroke.EurekaStrokeEntities.UploadLog" Width="1.5" PointX="10.5" PointY="19.75" Height="3.903300781249996" IsExpanded="true" />
+        <EntityTypeShape EntityType="Eureka.Stroke.EurekaStrokeEntities.UserFacility" Width="1.5" PointX="7.5" PointY="20.875" Height="1.5956835937500031" IsExpanded="true" />
+        <EntityTypeShape EntityType="Eureka.Stroke.EurekaStrokeEntities.UserFolder" Width="1.5" PointX="5" PointY="1" Height="1.59568359375" IsExpanded="true" />
+        <EntityTypeShape EntityType="Eureka.Stroke.EurekaStrokeEntities.UserReport" Width="1.5" PointX="7.25" PointY="3.75" Height="1.5956835937499996" IsExpanded="true" />
+        <EntityTypeShape EntityType="Eureka.Stroke.EurekaStrokeEntities.UserReportingSource" Width="1.5" PointX="5.75" PointY="6.75" Height="1.4033821614583335" IsExpanded="true" />
+        <EntityTypeShape EntityType="Eureka.Stroke.EurekaStrokeEntities.StrokeUser" Width="1.5" PointX="7.75" PointY="0.75" Height="1.4033821614583333" IsExpanded="true" />
+        <AssociationConnector Association="Eureka.Stroke.EurekaStrokeEntities.FK_AlienField_EurekaField" ManuallyRouted="false">
+          <ConnectorPoint PointX="1.5" PointY="14.720602213541667" />
+          <ConnectorPoint PointX="1.5" PointY="16.187246093749998" />
+          <ConnectorPoint PointX="1.8229191666666667" PointY="16.187246093749998" />
+          <ConnectorPoint PointX="1.9895858333333332" PointY="16.187246093749998" />
+          <ConnectorPoint PointX="2.5416666666666665" PointY="16.187246093749998" />
+          <ConnectorPoint PointX="2.7083333333333335" PointY="16.187246093749998" />
+          <ConnectorPoint PointX="5.25" PointY="16.187246093749998" /></AssociationConnector>
+        <AssociationConnector Association="Eureka.Stroke.EurekaStrokeEntities.FK_AlienField_Format" ManuallyRouted="false">
+          <ConnectorPoint PointX="4.5" PointY="21.692047526041666" />
+          <ConnectorPoint PointX="4.875" PointY="21.692047526041666" />
+          <ConnectorPoint PointX="4.875" PointY="17.249621140625003" />
+          <ConnectorPoint PointX="5.25" PointY="17.249621140625003" /></AssociationConnector>
+        <AssociationConnector Association="Eureka.Stroke.EurekaStrokeEntities.FK_AlienValue_EurekaField" ManuallyRouted="false">
+          <ConnectorPoint PointX="2.25" PointY="12.264150390625" />
+          <ConnectorPoint PointX="2.5416666666666665" PointY="12.264150390625" />
+          <ConnectorPoint PointX="2.7083333333333335" PointY="12.264150390625" />
+          <ConnectorPoint PointX="9" PointY="12.264150390625" />
+          <ConnectorPoint PointX="9" PointY="15.5" /></AssociationConnector>
+        <AssociationConnector Association="Eureka.Stroke.EurekaStrokeEntities.FK_AlienValue_EurekaValue" ManuallyRouted="false">
+          <ConnectorPoint PointX="4.5" PointY="14.1562475" />
+          <ConnectorPoint PointX="8.5937475" PointY="14.1562475" />
+          <ConnectorPoint PointX="8.5937475" PointY="15.5" /></AssociationConnector>
+        <AssociationConnector Association="Eureka.Stroke.EurekaStrokeEntities.FK_AlienValue_Format" ManuallyRouted="false">
+          <ConnectorPoint PointX="4.5" PointY="22.963440755208332" />
+          <ConnectorPoint PointX="9.40625" PointY="22.963440755208332" />
+          <ConnectorPoint PointX="9.40625" PointY="18.441793619791667" /></AssociationConnector>
+        <AssociationConnector Association="Eureka.Stroke.EurekaStrokeEntities.FK_AuditLog_StrokeFieldValue" ManuallyRouted="false">
+          <ConnectorPoint PointX="4.5" PointY="9.9345914713541674" />
+          <ConnectorPoint PointX="10.760414166666665" PointY="9.9345914713541674" />
+          <ConnectorPoint PointX="10.927080833333333" PointY="9.9345914713541674" />
+          <ConnectorPoint PointX="13.5" PointY="9.9345914713541674" />
+          <ConnectorPoint PointX="13.5" PointY="13.875" /></AssociationConnector>
+        <AssociationConnector Association="Eureka.Stroke.EurekaStrokeEntities.FK_AuditLog_UploadLog" ManuallyRouted="false">
+          <ConnectorPoint PointX="11.25" PointY="19.75" />
+          <ConnectorPoint PointX="11.25" PointY="15.634348958333334" />
+          <ConnectorPoint PointX="12.75" PointY="15.634348958333334" /></AssociationConnector>
+        <AssociationConnector Association="Eureka.Stroke.EurekaStrokeEntities.BusinessRuleCheckResults_fk" ManuallyRouted="false">
+          <ConnectorPoint PointX="2.25" PointY="7.6631982421875" />
+          <ConnectorPoint PointX="2.625" PointY="7.6631982421875" />
+          <ConnectorPoint PointX="2.625" PointY="17.740143229166666" />
+          <ConnectorPoint PointX="3" PointY="17.740143229166666" /></AssociationConnector>
+        <AssociationConnector Association="Eureka.Stroke.EurekaStrokeEntities.FK_EurekaField_Format" ManuallyRouted="false">
+          <ConnectorPoint PointX="3" PointY="21.692047526041666" />
+          <ConnectorPoint PointX="1.9062525" PointY="21.692047526041666" />
+          <ConnectorPoint PointX="1.9062525" PointY="14.720602213541667" /></AssociationConnector>
+        <AssociationConnector Association="Eureka.Stroke.EurekaStrokeEntities.FK_EurekaValue_EurekaField" ManuallyRouted="false">
+          <ConnectorPoint PointX="2.25" PointY="13.797801106770834" />
+          <ConnectorPoint PointX="2.5416666666666665" PointY="13.797801106770834" />
+          <ConnectorPoint PointX="2.7083333333333335" PointY="13.797801106770834" />
+          <ConnectorPoint PointX="3" PointY="13.797801106770834" /></AssociationConnector>
+        <AssociationConnector Association="Eureka.Stroke.EurekaStrokeEntities.FK_StrokeFieldValue_EurekaField" ManuallyRouted="false">
+          <ConnectorPoint PointX="2.25" PointY="11.139150390625" />
+          <ConnectorPoint PointX="2.5416666666666665" PointY="11.139150390625" />
+          <ConnectorPoint PointX="2.7083333333333335" PointY="11.139150390625" />
+          <ConnectorPoint PointX="3" PointY="11.139150390625" /></AssociationConnector>
+        <AssociationConnector Association="Eureka.Stroke.EurekaStrokeEntities.FK_Facility_Format" ManuallyRouted="false">
+          <ConnectorPoint PointX="4.5" PointY="21.096023763020831" />
+          <ConnectorPoint PointX="4.791666666666667" PointY="21.096023763020831" />
+          <ConnectorPoint PointX="4.958333333333333" PointY="21.096023763020831" />
+          <ConnectorPoint PointX="5.25" PointY="21.096023763020831" /></AssociationConnector>
+        <AssociationConnector Association="Eureka.Stroke.EurekaStrokeEntities.FK_UploadLog_FacilityID" ManuallyRouted="false">
+          <ConnectorPoint PointX="6.75" PointY="20.71875" />
+          <ConnectorPoint PointX="9.3229166666666661" PointY="20.71875" />
+          <ConnectorPoint PointX="9.4895833333333339" PointY="20.71875" />
+          <ConnectorPoint PointX="10.5" PointY="20.71875" /></AssociationConnector>
+        <AssociationConnector Association="Eureka.Stroke.EurekaStrokeEntities.FK_UserFacility_FacilityID" ManuallyRouted="false">
+          <ConnectorPoint PointX="6.75" PointY="21.672841796875" />
+          <ConnectorPoint PointX="7.5" PointY="21.672841796875" /></AssociationConnector>
+        <AssociationConnector Association="Eureka.Stroke.EurekaStrokeEntities.FK_Report_FolderID" ManuallyRouted="false">
+          <ConnectorPoint PointX="4.25" PointY="3.9612939453125" />
+          <ConnectorPoint PointX="5" PointY="3.9612939453125" /></AssociationConnector>
+        <AssociationConnector Association="Eureka.Stroke.EurekaStrokeEntities.FK_UserFolder_FolderID" ManuallyRouted="false">
+          <ConnectorPoint PointX="3.5" PointY="2.375" />
+          <ConnectorPoint PointX="3.5" PointY="1.6874995" />
+          <ConnectorPoint PointX="5" PointY="1.6874995" /></AssociationConnector>
+        <AssociationConnector Association="Eureka.Stroke.EurekaStrokeEntities.FK_UploadLog_Format" ManuallyRouted="false">
+          <ConnectorPoint PointX="4.5" PointY="20.34375" />
+          <ConnectorPoint PointX="4.791666666666667" PointY="20.34375" />
+          <ConnectorPoint PointX="4.958333333333333" PointY="20.34375" />
+          <ConnectorPoint PointX="9.3229166666666661" PointY="20.34375" />
+          <ConnectorPoint PointX="9.4895833333333339" PointY="20.34375" />
+          <ConnectorPoint PointX="10.5" PointY="20.34375" /></AssociationConnector>
+        <AssociationConnector Association="Eureka.Stroke.EurekaStrokeEntities.FK_UserReport_ReportID" ManuallyRouted="false">
+          <ConnectorPoint PointX="6.5" PointY="4.547841796875" />
+          <ConnectorPoint PointX="7.25" PointY="4.547841796875" /></AssociationConnector>
+        <AssociationConnector Association="Eureka.Stroke.EurekaStrokeEntities.FK_StrokeFieldValue_StrokeData" ManuallyRouted="false">
+          <ConnectorPoint PointX="2.25" PointY="8.5381982421875" />
+          <ConnectorPoint PointX="2.5416666666666665" PointY="8.5381982421875" />
+          <ConnectorPoint PointX="2.7083333333333335" PointY="8.5381982421875" />
+          <ConnectorPoint PointX="3" PointY="8.5381982421875" /></AssociationConnector>
+        <AssociationConnector Association="Eureka.Stroke.EurekaStrokeEntities.KeyEurekaField" ManuallyRouted="false">
+          <ConnectorPoint PointX="1.0937475" PointY="14.720602213541667" />
+          <ConnectorPoint PointX="1.0937475" PointY="20.877271263020834" />
+          <ConnectorPoint PointX="1.8229191666666667" PointY="20.877271263020834" />
+          <ConnectorPoint PointX="1.9895858333333332" PointY="20.877271263020834" />
+          <ConnectorPoint PointX="3" PointY="20.877271263020834" /></AssociationConnector>
+        <AssociationConnector Association="Eureka.Stroke.EurekaStrokeEntities.UploadLogStrokeData" ManuallyRouted="false">
+          <ConnectorPoint PointX="2.25" PointY="6.34375" />
+          <ConnectorPoint PointX="10.8437475" PointY="6.34375" />
+          <ConnectorPoint PointX="10.8437475" PointY="19.75" /></AssociationConnector></Diagram></edmx:Diagrams>
+  </edmx:Designer>
+</edmx:Edmx>

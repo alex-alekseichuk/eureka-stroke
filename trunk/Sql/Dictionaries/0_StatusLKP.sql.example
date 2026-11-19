@@ -1,0 +1,33 @@
+SET XACT_ABORT ON; IF (OBJECT_ID('tempdb..#VersionGuidTmp') IS NULL) CREATE TABLE #VersionGuidTmp ([Guid] uniqueidentifier NOT NULL,[dateMarked] datetime NOT NULL,[description] varchar(255) NOT NULL,[isError] bit NOT NULL DEFAULT 0)
+GO
+-- This line should be at the beginning of each Dictionary AutoChangesGuid script
+
+--( Dictionary AutoChangesGuid block
+-- Select the expression below (not including leading -- ) and execute by press F5. Copy result Guid from Messages windows and 
+-- paste it to initialize @versionGuid and @dateMarked of your block. Don't forget change @description
+-- PRINT '''' + CAST(NEWID() as varchar(36)) + '''' + CAST(0x0D0A as varchar(2)) + '''' + CONVERT(varchar(20), GETDATE(), 113) + ''''
+DECLARE @ret int;
+EXEC @ret = sysVersionGuidPrepare @versionGuid = '9BCD5DD1-FEE1-471D-978C-5DED01D2C826',
+                                  @dateMarked  = '30 Sep 2009 17:29:04',
+                                  @description = 'alexa: Initialize dictionary [StatusLKP]';
+GO
+DECLARE @ret int, @options int, @oldNoCountValue bit; 
+BEGIN TRANSACTION;
+EXEC @ret = sysVersionGuidLog; 
+IF (@ret = -1) 	BEGIN ROLLBACK TRANSACTION; SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;	DELETE #VersionGuidTmp; IF @oldNoCountValue = 0 SET NOCOUNT OFF;	END
+ELSE BEGIN
+---------------------
+
+IF NOT EXISTS (SELECT * FROM [StatusLKP])
+BEGIN
+	INSERT INTO [StatusLKP] ([ID], [name]) VALUES (1, 'Active'); -- (enabled)  --1; default;
+	INSERT INTO [StatusLKP] ([ID], [name]) VALUES (2, 'Disabled');
+	INSERT INTO [StatusLKP] ([ID], [name]) VALUES (3, 'Deleted');
+END
+	
+-----------------------
+	EXEC sysVersionGuidCommit;
+	COMMIT TRANSACTION;
+END
+GO
+--) '9BCD5DD1-FEE1-471D-978C-5DED01D2C826'

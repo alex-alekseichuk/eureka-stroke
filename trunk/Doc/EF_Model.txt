@@ -1,0 +1,28 @@
+
+
+To generate EF model by DB:
+
+
+File: EurekaStroke.edmx
+Connection key: EurekaStrokeEntities
+Entities class: Eureka.Stroke.EurekaStrokeEntities
+
+
+Choose all tables except of VersionGuid
++ StrokeUser view
+
+
+Change
+    EurekaField
+        Format1 to KeyFormat
+    Format
+        EurekaField1 to KeyEurekaField
+
+
+Change in EurekaStroke.edmx.cs
+	Core. to Eureka.Stroke.
+	namespace Core to namespace Eureka.Stroke
+
+
+
+

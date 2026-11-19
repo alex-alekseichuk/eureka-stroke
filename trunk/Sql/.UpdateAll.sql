@@ -1,0 +1,5169 @@
+GO 
+--=======================================================================================
+--  BEGIN INITIALIZE AutoChangesGuid.sql
+--=======================================================================================
+
+DECLARE @dbName varchar(MAX); SELECT @dbName = DB_NAME();
+PRINT 'Applying AutoChangesGuid.sql against [' + @dbName + '] database';
+IF (@dbName = 'master') RAISERROR('Error: An attempt to apply AutoChangesGuid.sql against [master] database', 20, 1) with log;
+GO
+
+IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[VersionGuid]') AND type in (N'U'))
+	CREATE TABLE VersionGuid(
+		[Guid] uniqueidentifier NOT NULL, CONSTRAINT PK_VersionGuid PRIMARY KEY NONCLUSTERED([Guid]),
+		[dateMarked] datetime NOT NULL,
+		[dateApplied] datetime NOT NULL,
+		-- timestamp NOT NULL,
+		[description] varchar(255) NOT NULL,
+		 CONSTRAINT [UQ__VersionGuid_dateMarked] UNIQUE CLUSTERED 
+		([dateMarked] ASC)WITH (PAD_INDEX  = OFF, STATISTICS_NORECOMPUTE  = OFF, IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS  = ON, ALLOW_PAGE_LOCKS  = ON) ON [PRIMARY],
+		 CONSTRAINT [UQ__VersionGuid_description] UNIQUE NONCLUSTERED 
+		([dateMarked] ASC) WITH( STATISTICS_NORECOMPUTE = OFF, IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON) ON [PRIMARY]
+	) ON [PRIMARY]
+GO
+
+IF (OBJECT_ID('tempdb..#VersionGuidTmp') IS NOT NULL)
+	DROP TABLE #VersionGuidTmp;
+CREATE TABLE #VersionGuidTmp(
+	[Guid] uniqueidentifier NOT NULL,
+	[dateMarked] datetime NOT NULL,
+	[description] varchar(255) NOT NULL,
+	[isError] bit NOT NULL DEFAULT 0,
+) ON [PRIMARY]
+GO
+
+IF EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[sysVersionGuidPrepare]') AND type in (N'P', N'PC'))
+DROP PROCEDURE [sysVersionGuidPrepare]
+GO
+CREATE PROCEDURE [sysVersionGuidPrepare] 
+    @versionGuid uniqueidentifier
+	,@dateMarked datetime
+	,@description varchar(255)
+AS
+BEGIN
+	DECLARE @options int, @oldNoCountValue bit; 
+	SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;
+
+	IF EXISTS (SELECT * FROM #VersionGuidTmp)
+		BEGIN
+			UPDATE #VersionGuidTmp
+			SET [isError] = 1;
+			RAISERROR('Block is not apllied. See previous error.', 16, 1);
+			RETURN -1;
+		END
+
+	INSERT INTO #VersionGuidTmp ([Guid], [dateMarked], [description],[isError]) 
+		VALUES (@versionGuid, @dateMarked, @description, 0);
+
+	IF @oldNoCountValue = 0 SET NOCOUNT OFF;
+END
+GO
+
+IF EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[sysVersionGuidCommit]') AND type in (N'P', N'PC'))
+DROP PROCEDURE [sysVersionGuidCommit]
+GO
+CREATE PROCEDURE [sysVersionGuidCommit]
+AS
+BEGIN
+	DECLARE @options int, @oldNoCountValue bit; 
+	SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;
+
+    DECLARE @versionGuid uniqueidentifier
+			,@dateMarked datetime
+			,@description varchar(255)
+			,@isError bit;
+
+	SELECT @versionGuid = [Guid]
+		  ,@dateMarked = [dateMarked]
+		  ,@description = [description]
+		  ,@isError = [isError]
+	FROM #VersionGuidTmp;
+
+	IF @isError = 1
+		RAISERROR('Commit is not allowed. See previous error.', 16, 1);
+
+	DELETE #VersionGuidTmp;
+
+    PRINT 'Actual auto-change [' + CAST(@versionGuid AS varchar(36)) + '] is apllied.';
+	IF @oldNoCountValue = 0 SET NOCOUNT OFF;
+END
+GO
+
+IF EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[sysVersionGuidLog]') AND type in (N'P', N'PC'))
+DROP PROCEDURE [dbo].[sysVersionGuidLog]
+GO
+CREATE PROCEDURE [dbo].[sysVersionGuidLog] 
+AS
+BEGIN
+    DECLARE @invalidReturn int; SET @invalidReturn = -1;
+    DECLARE @dateStyle int; SET @dateStyle = 121;
+
+    DECLARE @versionGuid uniqueidentifier
+			,@dateMarked datetime
+			,@description varchar(255)
+			,@isError bit
+			,@dateAlreadyApplied datetime
+			,@dateMarkedAlreadyApplied datetime
+			,@descriptionAlreadyApplied varchar(255);
+
+	SELECT @versionGuid = [Guid]
+		  ,@dateMarked = [dateMarked]
+		  ,@description = [description]
+		  ,@isError = [isError]
+	FROM #VersionGuidTmp;
+
+	IF @isError = 1
+		BEGIN
+	        RAISERROR( 'Block not applied! See previous error...', 16, 1);
+			RETURN @invalidReturn;
+		END
+
+    DECLARE @options INT; 
+    SELECT @options = @@OPTIONS;
+    -- 16384 XACT_ABORT 'Rolls back a transaction if a Transact-SQL statement raises a run-time error.'
+    IF (NOT (16384 & @options) = 16384)
+    BEGIN
+        PRINT '- AutoChangesGuid error 2: VersionGuid [' + CAST(@versionGuid AS varchar(36)) +
+            '] cannot be applied since XACT_ABORT parameter is set OFF. Cannot continue the transaction.';
+        RAISERROR('- AutoChangesGuid error 2: VersionGuid cannot be applied since XACT_ABORT parameter is set OFF. Cannot continue the transaction.', 16, 1);
+        RETURN @invalidReturn;
+    END
+
+	IF @versionGuid IS NULL OR @versionGuid = '00000000-0000-0000-0000-000000000000'
+		BEGIN
+			PRINT '- AutoChangesGuid error 4: @versionGuid IS NULL. Cannot continue the transaction.';
+			RAISERROR('- AutoChangesGuid error 4: @versionGuid IS NULL. Cannot continue the transaction.', 16, 1);
+			RETURN @invalidReturn;
+		END
+	IF @dateMarked IS NULL OR @dateMarked = 0
+		BEGIN
+			PRINT '- AutoChangesGuid error 5: @dateMarked IS NULL. Cannot continue the transaction.';
+			RAISERROR('- AutoChangesGuid error 5: @dateMarked IS NULL. Cannot continue the transaction.', 16, 1);
+			RETURN @invalidReturn;
+		END
+	IF @description IS NULL OR @description = ''
+		BEGIN
+			PRINT '- AutoChangesGuid error 6: @description IS NULL. Cannot continue the transaction.';
+			RAISERROR('- AutoChangesGuid error 6: @description IS NULL. Cannot continue the transaction.', 16, 1);
+			RETURN @invalidReturn;
+		END
+
+    IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[VersionGuid]') AND type in (N'U'))
+				RAISERROR('- AutoChangesGuid error - table [VersionGuid] not found', 16, 1);
+    ELSE
+		SELECT @dateAlreadyApplied = [dateApplied]
+				,@dateMarkedAlreadyApplied = [dateMarked]
+				,@descriptionAlreadyApplied = [description]
+		FROM [VersionGuid]
+		WHERE [Guid] = @versionGuid;
+
+	IF (@dateAlreadyApplied IS NOT NULL)
+		BEGIN
+			PRINT '- VersionGuid [' + CAST(@versionGuid AS varchar(36)) + '] is already applied at ' 
+				+ CONVERT(varchar, @dateAlreadyApplied, @dateStyle);
+			IF (@descriptionAlreadyApplied != @description)
+			BEGIN
+				PRINT '- AutoChangesGuid error 3: VersionGuid [' + CAST(@versionGuid AS varchar(36)) + '] ['
+					 + CONVERT(varchar(30),@dateMarked,121)	+ '] description ambiguity! ';
+				PRINT '         applying: "' + @description + '"';
+				PRINT '  already applied: "' + @descriptionAlreadyApplied + '"';
+				RAISERROR('- AutoChangesGuid error 3', 16, 1);
+			END
+			IF (@dateMarkedAlreadyApplied != @dateMarked)
+			BEGIN
+				PRINT '- AutoChangesGuid error 2: VersionGuid [' + CAST(@versionGuid AS varchar(36)) + '] ['
+					+ @description + '] dateMarked ambiguity! ';
+				PRINT '         applying: "' + CONVERT(varchar, @dateMarked, @dateStyle) + '"';
+				PRINT '  already applied: "' + CONVERT(varchar, @dateMarkedAlreadyApplied, @dateStyle) + '"';
+				RAISERROR('- AutoChangesGuid error 2', 16, 1);
+			END
+			RETURN @invalidReturn;
+		END
+	ELSE
+		BEGIN
+			DECLARE @conflictingVersionGuid uniqueidentifier;
+
+			SELECT TOP (1) @conflictingVersionGuid = [Guid]
+			FROM [VersionGuid]
+			WHERE @dateMarked = [dateMarked];
+
+			IF @conflictingVersionGuid IS NOT NULL
+			BEGIN
+				PRINT '- AutoChangesGuid error 1: VersionGuid conflict: existing VersionGuid [' 
+						+ CAST(@conflictingVersionGuid AS varchar(36)) + '] and applying VersionGuid [' 
+						+ CAST(@versionGuid AS varchar(36)) + '] have the same dateMarked';
+			   PRINT 'Cannot apply duplicating VersionGuid [' + CAST(@versionGuid AS varchar(36)) + '] [' + CONVERT(varchar(30),@dateMarked,121)
+						+ '] [' + @description + ']';
+				RAISERROR('- AutoChangesGuid error 1', 16, 1);
+				RETURN @invalidReturn;
+			END
+
+			SELECT TOP (1) @conflictingVersionGuid = [Guid]
+			FROM [VersionGuid]
+			WHERE @description = [description];
+
+			IF @conflictingVersionGuid IS NOT NULL
+			BEGIN
+				PRINT '- AutoChangesGuid error 1: VersionGuid conflict: existing VersionGuid [' 
+						+ CAST(@conflictingVersionGuid AS varchar(36)) + '] and applying VersionGuid [' 
+						+ CAST(@versionGuid AS varchar(36)) + '] have the same description';
+			   PRINT 'Cannot apply duplicating VersionGuid [' + CAST(@versionGuid AS varchar(36)) + '] [' + CONVERT(varchar(30),@dateMarked,121)
+						+ '] [' + @description + ']';
+				RAISERROR('- AutoChangesGuid error 1', 16, 1);
+				RETURN @invalidReturn;
+			END
+
+			SELECT @dateMarkedAlreadyApplied = MAX([dateMarked])
+			FROM [VersionGuid];
+
+			IF @dateMarked < @dateMarkedAlreadyApplied
+				BEGIN
+					PRINT 'AutoChangesGuid warning 1: VersionGuid [' + CAST(@versionGuid AS varchar(36)) + '] dateMarked is less than already applied! ';
+					PRINT '         applying: "' + CONVERT(varchar, @dateMarked, @dateStyle) + '"';
+					PRINT '  already applied: "' + CONVERT(varchar, @dateMarkedAlreadyApplied, @dateStyle) + '"';
+				END
+
+			DECLARE @dateApplied datetime; SET @dateApplied = GETDATE();
+
+			PRINT '+ Applying VersionGuid [' + CAST(@versionGuid AS varchar(36)) + '] [' + CONVERT(varchar(30),@dateMarked,121)
+					+ '] [' + @description + '] at '+ CONVERT(varchar, @dateApplied, @dateStyle);
+ 
+            DECLARE @oldNoCountValue bit;
+            SELECT @options = @@OPTIONS;
+            -- 512 NOCOUNT 'Turns off the message returned at the end of each statement that states how many rows were affected.'
+            IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;
+            INSERT INTO [VersionGuid] ([Guid], [dateMarked], [dateApplied], [description]) 
+                VALUES (@versionGuid, @dateMarked, @dateApplied, @description);
+            IF @oldNoCountValue = 0 SET NOCOUNT OFF;
+		    PRINT 'Actual auto-change [' + CAST(@versionGuid AS varchar(36)) + '] is being applied...';
+        END
+    RETURN 0;
+END
+GO
+
+/*********************************************************************************************
+ ** Insert procedures/functions used in AutoChangesGuid (or integrate them to initial backup)  ***
+ *********************************************************************************************/
+--IF  EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[TestFunction]') AND type in (N'FN', N'IF', N'TF', N'FS', N'FT'))
+--DROP FUNCTION [dbo].[TestFunction]
+--GO
+--
+--CREATE FUNCTION [dbo].[TestFunction](@param1 as int)
+--RETURNS int
+--AS
+--BEGIN
+--   RETURN @param1 * 2;
+--END
+--GO
+
+-- GENERAL NOTES
+-- An auto update script block should always start with "--(" and end with "--)"
+-- Date format is EXACTLY 'dd MMM yyyy HH:mm:ss'
+-- Do not forget to add linebreak after your script block both in the middle and in the end of this file
+-- DO NOT SET SET XACT_ABORT OFF for proper script blocks work
+SET XACT_ABORT ON
+GO
+
+--(
+-- Initialization, don't edit and copy this block
+DECLARE @ret int;
+EXEC @ret = sysVersionGuidPrepare @versionGuid = '11111111-1111-1111-1111-111111111111',
+	@dateMarked  = '01 Jan 2001 00:00:00', @description = 'alexa: VersionGuid autochange system initialization';
+GO
+DECLARE @ret int, @options int, @oldNoCountValue bit; 
+BEGIN TRANSACTION;
+EXEC @ret = sysVersionGuidLog;
+IF (@ret = -1) 	BEGIN ROLLBACK TRANSACTION; SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;	DELETE #VersionGuidTmp; IF @oldNoCountValue = 0 SET NOCOUNT OFF;	END
+ELSE
+	BEGIN
+	 	EXEC sysVersionGuidCommit;
+		COMMIT TRANSACTION;
+END
+GO
+--) 11111111-1111-1111-1111-111111111111
+
+--(
+-- Select the expression below (not including leading -- ) and execute by press F5. Copy result Guid from Messages windows and 
+-- paste it to initialize @versionGuid and @dateMarked of your block. Don't forget change @description
+-- PRINT '''' + CAST(NEWID() as varchar(36)) + '''' + CAST(0x0D0A as varchar(2)) + '''' + CONVERT(varchar(20), GETDATE(), 113) + ''''
+
+DECLARE @ret int;
+EXEC @ret = sysVersionGuidPrepare @versionGuid = '44444444-4444-4444-4444-444444444444',
+                                  @dateMarked  = '01 Jan 2001 00:00:15',
+                                  @description = 'alexa: example Guid auto-change script block 4';
+GO
+DECLARE @ret int, @options int, @oldNoCountValue bit; 
+BEGIN TRANSACTION;
+EXEC @ret = sysVersionGuidLog; 
+IF (@ret = -1) 	BEGIN ROLLBACK TRANSACTION; SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;	DELETE #VersionGuidTmp; IF @oldNoCountValue = 0 SET NOCOUNT OFF;	END
+ELSE BEGIN
+--------------------------------------------------------------------------------------------------------------------------
+    -- Insert actual new auto-changes here.
+    -- Don''t forget to remove all GO statements from your change script fragment.
+    -- Do not turn off XACT_ABORT.
+    -- Split to several consecutive versions your long changes, or the changes that require some their parts committed before apllying their further statements.
+    IF EXISTS (SELECT name FROM sysobjects WHERE name = 'Test_Versions_Script' AND type = 'U')
+        DROP TABLE [dbo].[Test_Versions_Script];
+--------------------------------------------------------------------------------------------------------------------------
+	EXEC sysVersionGuidCommit;
+	COMMIT TRANSACTION;
+END
+GO
+--) 44444444-4444-4444-4444-444444444444
+
+
+--(
+-- Select the expression below (not including leading -- ) and execute by press F5. Copy result Guid from Messages windows and 
+-- paste it to initialize @versionGuid and @dateMarked of your block. Don't forget change @description
+-- PRINT '''' + CAST(NEWID() as varchar(36)) + '''' + CAST(0x0D0A as varchar(2)) + '''' + CONVERT(varchar(20), GETDATE(), 113) + ''''
+
+DECLARE @ret int;
+EXEC @ret = sysVersionGuidPrepare @versionGuid = 'DB955947-B5C1-4C53-9054-3434AAE49E8A',
+                                  @dateMarked  = '01 Sep 2009 16:10:28',
+                                  @description = 'alexa: added files from draft.sql';
+GO
+DECLARE @ret int, @options int, @oldNoCountValue bit; 
+BEGIN TRANSACTION;
+EXEC @ret = sysVersionGuidLog; 
+IF (@ret = -1) 	BEGIN ROLLBACK TRANSACTION; SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;	DELETE #VersionGuidTmp; IF @oldNoCountValue = 0 SET NOCOUNT OFF;	END
+ELSE BEGIN
+-----------------------------------------------------------------------------------------------------------------------------
+
+CREATE TABLE [dbo].[AuditLog] (
+  [ID] int IDENTITY(1, 1) NOT NULL,
+  [FieldValueID] int NOT NULL,
+  [Action] smallint NOT NULL,
+  [ActionDate] int NOT NULL,
+  [ActionUser] int NOT NULL,
+  [OldValue] varchar(max)  NULL,
+  [NextValue] varchar(max)  NULL,
+  [Status] int NULL,
+  CONSTRAINT PK_AuditLog PRIMARY KEY CLUSTERED (ID)
+)
+ON [PRIMARY];
+
+CREATE TABLE [dbo].[StrokeFieldValue] (
+  [ID] int IDENTITY(1, 1) NOT NULL,
+  [StrokeDataID] int NOT NULL,
+  [FieldID] int NOT NULL,
+  [IntegerValue] int NULL,
+  [BooleanValue] bit NULL,
+  [StringValue] varchar(max)  NULL,
+  [DateTimeValue] datetime NULL,
+  [DecimalValue] decimal(19,6) NULL,
+  [RawValue] varchar(max)  NULL,
+  [CreatedDate] datetime NULL,
+  [CreatedBy] int NULL,
+  [LastModifiedBy] int NULL,
+  [LastModifiedDate] datetime NULL,
+  [Status] smallint NULL,
+  CONSTRAINT PK_StrokeFieldValue PRIMARY KEY CLUSTERED (ID)
+)
+ON [PRIMARY];
+
+
+EXEC sp_addextendedproperty 'MS_Description', N'0 - success
+1 - failure', 'schema', 'dbo', 'table', 'StrokeFieldValue', 'column', 'Status'
+
+
+CREATE TABLE [dbo].[StrokeData] (
+  [ID] int IDENTITY(1, 1) NOT NULL,
+  [UploadLogID] int NULL,
+  [PatientID] varchar(256)  NOT NULL,
+  [CreatedDate] datetime NULL,
+  [CreatedBy] int NULL,
+  [LastModifiedDate] datetime NULL,
+  [LastModifiedBy] int NULL,
+  [Status] smallint NULL,
+  CONSTRAINT PK_StrokeData PRIMARY KEY CLUSTERED (ID)
+)
+ON [PRIMARY];
+
+CREATE TABLE [dbo].[Facility] (
+  [ID] int IDENTITY(1, 1) NOT NULL,
+  [Name] varchar(max)  NOT NULL,
+  [FormatID] int NULL,
+  CONSTRAINT PK_Facility PRIMARY KEY CLUSTERED (ID)
+)
+ON [PRIMARY];
+
+CREATE TABLE [dbo].[UploadLog] (
+  [ID] int IDENTITY(1, 1) NOT NULL,
+  [Filename] varchar(max)  NOT NULL,
+  [Status] smallint NOT NULL,
+  [ErrorCount] int NULL,
+  [ChangesCount] int NULL,
+  [TotalCount] int NULL,
+  [StartedDate] datetime NOT NULL,
+  [CompletionDate] datetime NULL,
+  [StartedBy] int NULL,
+  FacilityID int NOT NULL,
+  CONSTRAINT PK_UploadLog PRIMARY KEY CLUSTERED (ID)
+)
+ON [PRIMARY];
+
+
+
+CREATE TABLE [dbo].[Format] (
+  [ID] int IDENTITY(1, 1) NOT NULL,
+  [Name] varchar(max) NOT NULL,
+  [IsNative] bit NULL,
+  CONSTRAINT PK_Format PRIMARY KEY CLUSTERED (ID)
+)
+ON [PRIMARY];
+
+
+--
+-- Definition for foreign keys : 
+--
+
+
+
+ALTER TABLE [dbo].[Facility]
+ADD CONSTRAINT [FK_Facility_Format] FOREIGN KEY ([FormatID]) 
+  REFERENCES [dbo].[Format] ([ID]) 
+  ON UPDATE NO ACTION
+  ON DELETE NO ACTION;
+
+ALTER TABLE [dbo].[UploadLog]
+ADD CONSTRAINT [FK_UploadLog_FacilityID] FOREIGN KEY ([FacilityID]) 
+  REFERENCES [dbo].[Facility] ([ID]) 
+  ON UPDATE NO ACTION
+  ON DELETE NO ACTION;
+
+ALTER TABLE [dbo].[StrokeData]
+ADD CONSTRAINT [FK_StrokeData_UploadLog] FOREIGN KEY ([UploadLogID]) 
+  REFERENCES [dbo].[UploadLog] ([ID]) 
+  ON UPDATE NO ACTION
+  ON DELETE NO ACTION;
+
+ALTER TABLE [dbo].[StrokeFieldValue]
+ADD CONSTRAINT [FK_StrokeFieldValue_StrokeData] FOREIGN KEY ([StrokeDataID]) 
+  REFERENCES [dbo].[StrokeData] ([ID]) 
+  ON UPDATE NO ACTION
+  ON DELETE NO ACTION;
+
+
+
+ALTER TABLE [dbo].[AuditLog]
+ADD CONSTRAINT [FK_AuditLog_StrokeFieldValue] FOREIGN KEY ([FieldValueID]) 
+  REFERENCES [dbo].[StrokeFieldValue] ([ID]) 
+  ON UPDATE NO ACTION
+  ON DELETE NO ACTION;
+
+
+
+
+
+-----------------------------------------------------------------------------------------------------------------------------------
+	EXEC sysVersionGuidCommit;
+	COMMIT TRANSACTION;
+END
+GO
+--) DB955947-B5C1-4C53-9054-3434AAE49E8A
+
+
+
+--(
+-- Select the expression below (not including leading -- ) and execute by press F5. Copy result Guid from Messages windows and 
+-- paste it to initialize @versionGuid and @dateMarked of your block. Don't forget change @description
+-- PRINT '''' + CAST(NEWID() as varchar(36)) + '''' + CAST(0x0D0A as varchar(2)) + '''' + CONVERT(varchar(20), GETDATE(), 113) + ''''
+
+DECLARE @ret int;
+EXEC @ret = sysVersionGuidPrepare @versionGuid = '21B6DB1C-5FA3-4681-A05B-6AE68E26515F',
+                                  @dateMarked  = '23 Jan 2010 16:55:31',
+                                  @description = 'alexa: made some fields of UploadLog optional';
+GO
+DECLARE @ret int, @options int, @oldNoCountValue bit; 
+BEGIN TRANSACTION;
+EXEC @ret = sysVersionGuidLog; 
+IF (@ret = -1) 	BEGIN ROLLBACK TRANSACTION; SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;	DELETE #VersionGuidTmp; IF @oldNoCountValue = 0 SET NOCOUNT OFF;	END
+ELSE BEGIN
+--------------------------------------------------------------------------------------------------------------------------
+ALTER TABLE UploadLog ALTER COLUMN Status int NULL;
+ALTER TABLE UploadLog ALTER COLUMN StartedDate datetime NULL;
+ALTER TABLE UploadLog Add FormatID int NULL;
+--------------------------------------------------------------------------------------------------------------------------
+	EXEC sysVersionGuidCommit;
+	COMMIT TRANSACTION;
+END
+GO
+--) '21B6DB1C-5FA3-4681-A05B-6AE68E26515F'
+
+--(
+-- Select the expression below (not including leading -- ) and execute by press F5. Copy result Guid from Messages windows and 
+-- paste it to initialize @versionGuid and @dateMarked of your block. Don't forget change @description
+-- PRINT '''' + CAST(NEWID() as varchar(36)) + '''' + CAST(0x0D0A as varchar(2)) + '''' + CONVERT(varchar(20), GETDATE(), 113) + ''''
+
+DECLARE @ret int;
+EXEC @ret = sysVersionGuidPrepare @versionGuid = 'FD41879E-A939-4AAB-BB99-4877BE589C9E',
+                                  @dateMarked  = '26 Jan 2010 00:51:58',
+                                  @description = 'alexl: AuditLog changes and UploadLog to StrokeData many-to-many';
+GO
+DECLARE @ret int, @options int, @oldNoCountValue bit; 
+BEGIN TRANSACTION;
+EXEC @ret = sysVersionGuidLog; 
+IF (@ret = -1) 	BEGIN ROLLBACK TRANSACTION; SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;	DELETE #VersionGuidTmp; IF @oldNoCountValue = 0 SET NOCOUNT OFF;	END
+ELSE BEGIN
+------------------------------------------------------------------------------------------------------------------------------------
+
+ALTER TABLE [dbo].[AuditLog]
+ALTER COLUMN [FieldValueID] int
+
+
+ALTER TABLE [dbo].[AuditLog]
+ADD [FieldName] varchar(512) NULL
+
+
+ALTER TABLE [dbo].[AuditLog]
+ADD [RowNumber] int NULL
+
+
+ALTER TABLE [dbo].[AuditLog]
+ADD [ErrorMessage] nvarchar(max) NULL
+
+
+ALTER TABLE [dbo].[AuditLog]
+ADD [UploadLogID] int NULL
+
+
+ALTER TABLE [dbo].[AuditLog]
+ADD CONSTRAINT [FK_AuditLog_UploadLog] FOREIGN KEY ([UploadLogID]) 
+  REFERENCES [dbo].[UploadLog] ([ID]) 
+  ON UPDATE NO ACTION
+  ON DELETE NO ACTION
+
+
+CREATE TABLE [dbo].[UploadLogStrokeData] (
+  [UploadLogID] int NOT NULL,
+  [StrokeDataID] int NOT NULL,
+  PRIMARY KEY CLUSTERED ([UploadLogID], [StrokeDataID])
+)
+
+
+ALTER TABLE [dbo].[UploadLogStrokeData]
+ADD CONSTRAINT [FK_UploadLog] FOREIGN KEY ([UploadLogID]) 
+  REFERENCES [dbo].[UploadLog] ([ID]) 
+  ON UPDATE NO ACTION
+  ON DELETE NO ACTION
+
+
+ALTER TABLE [dbo].[UploadLogStrokeData]
+ADD CONSTRAINT [FK_StrokeData] FOREIGN KEY ([StrokeDataID]) 
+  REFERENCES [dbo].[StrokeData] ([ID]) 
+  ON UPDATE NO ACTION
+  ON DELETE NO ACTION
+
+
+ALTER TABLE [dbo].[StrokeData]
+DROP CONSTRAINT [FK_StrokeData_UploadLog]
+
+
+ALTER TABLE [dbo].[StrokeData]
+DROP COLUMN [UploadLogID]
+
+
+-------------------------------------------------------------------------------------------------------------------------------------
+	EXEC sysVersionGuidCommit;
+	COMMIT TRANSACTION;
+END
+GO
+--) FD41879E-A939-4AAB-BB99-4877BE589C9E
+
+--(
+-- Select the expression below (not including leading -- ) and execute by press F5. Copy result Guid from Messages windows and 
+-- paste it to initialize @versionGuid and @dateMarked of your block. Don't forget change @description
+-- PRINT '''' + CAST(NEWID() as varchar(36)) + '''' + CAST(0x0D0A as varchar(2)) + '''' + CONVERT(varchar(20), GETDATE(), 113) + ''''
+
+
+DECLARE @ret int;
+EXEC @ret = sysVersionGuidPrepare @versionGuid = 'EE244ADD-1756-428B-91CD-4562ADB86843',
+                                  @dateMarked  = '29 Jan 2010 20:23:19',
+                                  @description = 'alexl: Format key fields';
+GO
+DECLARE @ret int, @options int, @oldNoCountValue bit; 
+BEGIN TRANSACTION;
+EXEC @ret = sysVersionGuidLog; 
+IF (@ret = -1) 	BEGIN ROLLBACK TRANSACTION; SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;	DELETE #VersionGuidTmp; IF @oldNoCountValue = 0 SET NOCOUNT OFF;	END
+ELSE BEGIN
+------------------------------------------------------------------------------------------------------------------------------------
+ALTER TABLE [dbo].[Format]
+ADD [KeyFields] varchar(1024) NULL
+
+
+EXEC sp_addextendedproperty 'MS_Description', N'List of key field names', 'schema', 'dbo', 'table', 'Format', 'column', 'KeyFields'
+
+ALTER TABLE [dbo].[StrokeData]
+ADD [AdmissionDate] datetime NOT NULL
+
+
+CREATE UNIQUE NONCLUSTERED INDEX [StrokeData_idx] ON [dbo].[StrokeData]
+  ([PatientID], [AdmissionDate])
+WITH (
+  PAD_INDEX = OFF,
+  IGNORE_DUP_KEY = ON,
+  DROP_EXISTING = OFF,
+  STATISTICS_NORECOMPUTE = OFF,
+  SORT_IN_TEMPDB = OFF,
+  ONLINE = OFF,
+  ALLOW_ROW_LOCKS = ON,
+  ALLOW_PAGE_LOCKS = ON)
+
+
+-------------------------------------------------------------------------------------------------------------------------------------
+	EXEC sysVersionGuidCommit;
+	COMMIT TRANSACTION;
+END
+GO
+
+--) EE244ADD-1756-428B-91CD-4562ADB86843
+
+
+--(
+-- Select the expression below (not including leading -- ) and execute by press F5. Copy result Guid from Messages windows and 
+-- paste it to initialize @versionGuid and @dateMarked of your block. Don't forget change @description
+-- PRINT '''' + CAST(NEWID() as varchar(36)) + '''' + CAST(0x0D0A as varchar(2)) + '''' + CONVERT(varchar(20), GETDATE(), 113) + ''''
+
+
+DECLARE @ret int;
+EXEC @ret = sysVersionGuidPrepare @versionGuid = '1AAFA5FF-12F7-4998-8CAE-6C38813025E4',
+                                  @dateMarked  = '31 Jan 2010 12:44:16',
+                                  @description = 'alexl: add ItemType field in AuditLog';
+GO
+DECLARE @ret int, @options int, @oldNoCountValue bit; 
+BEGIN TRANSACTION;
+EXEC @ret = sysVersionGuidLog; 
+IF (@ret = -1) 	BEGIN ROLLBACK TRANSACTION; SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;	DELETE #VersionGuidTmp; IF @oldNoCountValue = 0 SET NOCOUNT OFF;	END
+ELSE BEGIN
+------------------------------------------------------------------------------------------------------------------------------------
+ALTER TABLE [dbo].[AuditLog]
+ADD [ItemType] smallint NULL
+
+EXEC sp_addextendedproperty 'MS_Description', N'The type of the item audited (StrokeValue, Meta data)', 'schema', 'dbo', 'table', 'AuditLog'
+
+
+
+-------------------------------------------------------------------------------------------------------------------------------------
+	EXEC sysVersionGuidCommit;
+	COMMIT TRANSACTION;
+END
+GO
+
+--) 1AAFA5FF-12F7-4998-8CAE-6C38813025E4
+
+
+--(
+-- Select the expression below (not including leading -- ) and execute by press F5. Copy result Guid from Messages windows and 
+-- paste it to initialize @versionGuid and @dateMarked of your block. Don't forget change @description
+-- PRINT '''' + CAST(NEWID() as varchar(36)) + '''' + CAST(0x0D0A as varchar(2)) + '''' + CONVERT(varchar(20), GETDATE(), 113) + ''''
+
+
+DECLARE @ret int;
+EXEC @ret = sysVersionGuidPrepare @versionGuid = '19257E9E-6F4A-4797-955C-03B294B6C4A5',
+                                  @dateMarked  = '02 Feb 2010 15:10:02',
+                                  @description = 'alexa: added CorrectionsCount and OriginalFilename to UploadLog';
+GO
+DECLARE @ret int, @options int, @oldNoCountValue bit; 
+BEGIN TRANSACTION;
+EXEC @ret = sysVersionGuidLog; 
+IF (@ret = -1) 	BEGIN ROLLBACK TRANSACTION; SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;	DELETE #VersionGuidTmp; IF @oldNoCountValue = 0 SET NOCOUNT OFF;	END
+ELSE BEGIN
+------------------------------------------------------------------------------------------------------------------------------------
+ALTER TABLE [dbo].[UploadLog]
+ADD [CorrectionsCount] int NULL
+
+ALTER TABLE [dbo].[UploadLog]
+ADD [OriginalFilename] nvarchar(1024) NULL
+-------------------------------------------------------------------------------------------------------------------------------------
+	EXEC sysVersionGuidCommit;
+	COMMIT TRANSACTION;
+END
+GO
+--) '19257E9E-6F4A-4797-955C-03B294B6C4A5'
+
+--(
+-- Select the expression below (not including leading -- ) and execute by press F5. Copy result Guid from Messages windows and 
+-- paste it to initialize @versionGuid and @dateMarked of your block. Don't forget change @description
+-- PRINT '''' + CAST(NEWID() as varchar(36)) + '''' + CAST(0x0D0A as varchar(2)) + '''' + CONVERT(varchar(20), GETDATE(), 113) + ''''
+
+
+DECLARE @ret int;
+EXEC @ret = sysVersionGuidPrepare @versionGuid = '19257E9E-6F4A-4797-955C-03B294B6C4A6',
+                                  @dateMarked  = '03 Feb 2010 23:10:02',
+                                  @description = 'alexl: fix AuditLog.ActionDate field';
+GO
+DECLARE @ret int, @options int, @oldNoCountValue bit; 
+BEGIN TRANSACTION;
+EXEC @ret = sysVersionGuidLog; 
+IF (@ret = -1) 	BEGIN ROLLBACK TRANSACTION; SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;	DELETE #VersionGuidTmp; IF @oldNoCountValue = 0 SET NOCOUNT OFF;	END
+ELSE BEGIN
+------------------------------------------------------------------------------------------------------------------------------------
+ALTER TABLE [dbo].[AuditLog]
+ALTER COLUMN [ActionDate] datetime NOT NULL
+-------------------------------------------------------------------------------------------------------------------------------------
+	EXEC sysVersionGuidCommit;
+	COMMIT TRANSACTION;
+END
+GO
+--) '19257E9E-6F4A-4797-955C-03B294B6C4A6'
+
+--(
+-- Select the expression below (not including leading -- ) and execute by press F5. Copy result Guid from Messages windows and 
+-- paste it to initialize @versionGuid and @dateMarked of your block. Don't forget change @description
+-- PRINT '''' + CAST(NEWID() as varchar(36)) + '''' + CAST(0x0D0A as varchar(2)) + '''' + CONVERT(varchar(20), GETDATE(), 113) + ''''
+DECLARE @ret int;
+EXEC @ret = sysVersionGuidPrepare @versionGuid = '2C26955F-ACE6-4AD8-90C9-52438BCA08FE',
+                                  @dateMarked  = '06 Feb 2010 14:43:04',
+                                  @description = 'alexa: ';
+GO
+DECLARE @ret int, @options int, @oldNoCountValue bit; 
+BEGIN TRANSACTION;
+EXEC @ret = sysVersionGuidLog; 
+IF (@ret = -1) 	BEGIN ROLLBACK TRANSACTION; SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;	DELETE #VersionGuidTmp; IF @oldNoCountValue = 0 SET NOCOUNT OFF;	END
+ELSE BEGIN
+------------------------------------------------------------------------------------------------------------------------------------
+ALTER TABLE [dbo].[AuditLog]
+ALTER COLUMN [ActionDate] datetime NOT NULL
+-------------------------------------------------------------------------------------------------------------------------------------
+	EXEC sysVersionGuidCommit;
+	COMMIT TRANSACTION;
+END
+GO
+--) '2C26955F-ACE6-4AD8-90C9-52438BCA08FE'
+
+
+--(
+-- Select the expression below (not including leading -- ) and execute by press F5. Copy result Guid from Messages windows and 
+-- paste it to initialize @versionGuid and @dateMarked of your block. Don't forget change @description
+-- PRINT '''' + CAST(NEWID() as varchar(36)) + '''' + CAST(0x0D0A as varchar(2)) + '''' + CONVERT(varchar(20), GETDATE(), 113) + ''''
+DECLARE @ret int;
+EXEC @ret = sysVersionGuidPrepare @versionGuid = 'F7CB615F-73E4-47DE-ACEF-159A8BCAE7EF',
+                                  @dateMarked  = '23 Feb 2010 11:02:49',
+                                  @description = 'alexa: added IsNew field to FieldDefinition for Eureka native fields';
+GO
+DECLARE @ret int, @options int, @oldNoCountValue bit; 
+BEGIN TRANSACTION;
+EXEC @ret = sysVersionGuidLog; 
+IF (@ret = -1) 	BEGIN ROLLBACK TRANSACTION; SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;	DELETE #VersionGuidTmp; IF @oldNoCountValue = 0 SET NOCOUNT OFF;	END
+ELSE BEGIN
+------------------------------------------------------------------------------------------------------------------------------------
+--ALTER TABLE [dbo].[FieldDefinition] ADD [IsNew] bit NOT NULL DEFAULT(1);
+-------------------------------------------------------------------------------------------------------------------------------------
+	EXEC sysVersionGuidCommit;
+	COMMIT TRANSACTION;
+END
+GO
+--) 'F7CB615F-73E4-47DE-ACEF-159A8BCAE7EF'
+
+--(
+-- Select the expression below (not including leading -- ) and execute by press F5. Copy result Guid from Messages windows and 
+-- paste it to initialize @versionGuid and @dateMarked of your block. Don't forget change @description
+-- PRINT '''' + CAST(NEWID() as varchar(36)) + '''' + CAST(0x0D0A as varchar(2)) + '''' + CONVERT(varchar(20), GETDATE(), 113) + ''''
+DECLARE @ret int;
+EXEC @ret = sysVersionGuidPrepare @versionGuid = 'F7CB615F-73E4-47DE-ACEF-159A8BCAE7ED',
+                                  @dateMarked  = '23 Feb 2010 11:02:50',
+                                  @description = 'alexa: made all existing fields as not new';
+GO
+DECLARE @ret int, @options int, @oldNoCountValue bit; 
+BEGIN TRANSACTION;
+EXEC @ret = sysVersionGuidLog; 
+IF (@ret = -1) 	BEGIN ROLLBACK TRANSACTION; SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;	DELETE #VersionGuidTmp; IF @oldNoCountValue = 0 SET NOCOUNT OFF;	END
+ELSE BEGIN
+------------------------------------------------------------------------------------------------------------------------------------
+--UPDATE [dbo].[FieldDefinition] SET [IsNew] = 0;
+-------------------------------------------------------------------------------------------------------------------------------------
+	EXEC sysVersionGuidCommit;
+	COMMIT TRANSACTION;
+END
+GO
+--) 'F7CB615F-73E4-47DE-ACEF-159A8BCAE7ED'
+
+--(
+-- Select the expression below (not including leading -- ) and execute by press F5. Copy result Guid from Messages windows and 
+-- paste it to initialize @versionGuid and @dateMarked of your block. Don't forget change @description
+-- PRINT '''' + CAST(NEWID() as varchar(36)) + '''' + CAST(0x0D0A as varchar(2)) + '''' + CONVERT(varchar(20), GETDATE(), 113) + ''''
+DECLARE @ret int;
+EXEC @ret = sysVersionGuidPrepare @versionGuid = '1628F2B7-A3F1-495D-BBFE-ECA0637C176B',
+                                  @dateMarked  = '17 Mar 2010 16:13:56',
+                                  @description = 'alexa: created new definition sctructure';
+GO
+DECLARE @ret int, @options int, @oldNoCountValue bit; 
+BEGIN TRANSACTION;
+EXEC @ret = sysVersionGuidLog; 
+IF (@ret = -1) 	BEGIN ROLLBACK TRANSACTION; SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;	DELETE #VersionGuidTmp; IF @oldNoCountValue = 0 SET NOCOUNT OFF;	END
+ELSE BEGIN
+------------------------------------------------------------------------------------------------------------------------------------
+CREATE TABLE [dbo].[EurekaField] (
+  [ID] int IDENTITY(1,1) NOT NULL,
+  [Name] varchar(64)  NOT NULL,
+  [FormatID] int NOT NULL,
+  [FieldType] smallint NOT NULL,
+  [Description] varchar(max) NULL,
+  [IsMandatory] bit NOT NULL,
+  [CreatedBy] int NULL,
+  [LastModifiedBy] int NULL,
+  [CreatedDate] datetime NULL,
+  [LastModifiedDate] datetime NULL,
+  CONSTRAINT PK_EurekaField PRIMARY KEY CLUSTERED (ID)
+)
+ON [PRIMARY];
+ALTER TABLE [dbo].[EurekaField]
+	ADD CONSTRAINT [FK_EurekaField_Format] FOREIGN KEY ([FormatID]) 
+		REFERENCES [dbo].[Format] ([ID]) 
+		ON UPDATE NO ACTION
+		ON DELETE NO ACTION;
+
+CREATE TABLE [dbo].[AlienField] (
+  [ID] int IDENTITY(1,1) NOT NULL,
+  [Name] varchar(64)  NOT NULL,
+  [EurekaFieldID] int NOT NULL,
+  [FormatID] int NOT NULL,
+  [RegularExpression] varchar(64) NULL,
+  [CreatedBy] int NULL,
+  [LastModifiedBy] int NULL,
+  [CreatedDate] datetime NULL,
+  [LastModifiedDate] datetime NULL,
+  CONSTRAINT PK_AlienField PRIMARY KEY CLUSTERED (ID)
+)
+ON [PRIMARY];
+ALTER TABLE [dbo].[AlienField]
+	ADD CONSTRAINT [FK_AlienField_Format] FOREIGN KEY ([FormatID]) 
+		REFERENCES [dbo].[Format] ([ID]) 
+		ON UPDATE NO ACTION
+		ON DELETE NO ACTION;
+ALTER TABLE [dbo].[AlienField]
+	ADD CONSTRAINT [FK_AlienField_EurekaField] FOREIGN KEY ([EurekaFieldID]) 
+		REFERENCES [dbo].[EurekaField] ([ID]) 
+		ON UPDATE NO ACTION
+		ON DELETE NO ACTION;
+
+CREATE TABLE [dbo].[EurekaValue] (
+  [ID] int IDENTITY(1,1) NOT NULL,
+  [EurekaFieldID] int NOT NULL,
+  [Value] varchar(64) NOT NULL,
+  [Description] varchar(max) NULL,
+  [CreatedBy] int NULL,
+  [LastModifiedBy] int NULL,
+  [CreatedDate] datetime NULL,
+  [LastModifiedDate] datetime NULL,
+  CONSTRAINT PK_EurekaValue PRIMARY KEY CLUSTERED (ID)
+)
+ON [PRIMARY];
+ALTER TABLE [dbo].[EurekaValue]
+	ADD CONSTRAINT [FK_EurekaValue_EurekaField] FOREIGN KEY ([EurekaFieldID]) 
+		REFERENCES [dbo].[EurekaField] ([ID]) 
+		ON UPDATE NO ACTION
+		ON DELETE NO ACTION;
+
+CREATE TABLE [dbo].[AlienValue] (
+  [ID] int IDENTITY(1,1) NOT NULL,
+  [EurekaFieldID] int NOT NULL,
+  [FormatID] int NOT NULL,
+  [Value] varchar(64) NOT NULL,
+  [EurekaValueID] int NULL,
+  [CreatedBy] int NULL,
+  [LastModifiedBy] int NULL,
+  [CreatedDate] datetime NULL,
+  [LastModifiedDate] datetime NULL,
+  [Description] nvarchar(max) NOT NULL, 
+  CONSTRAINT PK_AlienValue PRIMARY KEY CLUSTERED (ID)
+)
+ON [PRIMARY];
+ALTER TABLE [dbo].[AlienValue]
+	ADD CONSTRAINT [FK_AlienValue_Format] FOREIGN KEY ([FormatID]) 
+		REFERENCES [dbo].[Format] ([ID]) 
+		ON UPDATE NO ACTION
+		ON DELETE NO ACTION;
+ALTER TABLE [dbo].[AlienValue]
+	ADD CONSTRAINT [FK_AlienValue_EurekaField] FOREIGN KEY ([EurekaFieldID]) 
+		REFERENCES [dbo].[EurekaField] ([ID]) 
+		ON UPDATE NO ACTION
+		ON DELETE NO ACTION;
+
+
+
+-------------------------------------------------------------------------------------------------------------------------------------
+	EXEC sysVersionGuidCommit;
+	COMMIT TRANSACTION;
+END
+GO
+--) '1628F2B7-A3F1-495D-BBFE-ECA0637C176B'
+
+
+
+--(
+-- Select the expression below (not including leading -- ) and execute by press F5. Copy result Guid from Messages windows and 
+-- paste it to initialize @versionGuid and @dateMarked of your block. Don't forget change @description
+-- PRINT '''' + CAST(NEWID() as varchar(36)) + '''' + CAST(0x0D0A as varchar(2)) + '''' + CONVERT(varchar(20), GETDATE(), 113) + ''''
+DECLARE @ret int;
+EXEC @ret = sysVersionGuidPrepare @versionGuid = '5BD5C470-355A-49ED-B93D-249F08E4A355',
+                                  @dateMarked  = '17 Mar 2010 17:28:42',
+                                  @description = 'alexa: link stroke data to new definitions structure instead of old one';
+GO
+DECLARE @ret int, @options int, @oldNoCountValue bit; 
+BEGIN TRANSACTION;
+EXEC @ret = sysVersionGuidLog; 
+IF (@ret = -1) 	BEGIN ROLLBACK TRANSACTION; SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;	DELETE #VersionGuidTmp; IF @oldNoCountValue = 0 SET NOCOUNT OFF;	END
+ELSE BEGIN
+------------------------------------------------------------------------------------------------------------------------------------
+--ALTER TABLE StrokeFieldValue
+	--DROP CONSTRAINT FK_StrokeFieldValue_FieldDefinition;
+ALTER TABLE StrokeFieldValue
+	ADD CONSTRAINT FK_StrokeFieldValue_EurekaField
+	FOREIGN KEY ([FieldID]) 
+		REFERENCES [dbo].[EurekaField] ([ID]) 
+		ON UPDATE NO ACTION
+		ON DELETE NO ACTION;
+-------------------------------------------------------------------------------------------------------------------------------------
+	EXEC sysVersionGuidCommit;
+	COMMIT TRANSACTION;
+END
+GO
+--) '5BD5C470-355A-49ED-B93D-249F08E4A355'
+
+
+
+--(
+-- Select the expression below (not including leading -- ) and execute by press F5. Copy result Guid from Messages windows and 
+-- paste it to initialize @versionGuid and @dateMarked of your block. Don't forget change @description
+-- PRINT '''' + CAST(NEWID() as varchar(36)) + '''' + CAST(0x0D0A as varchar(2)) + '''' + CONVERT(varchar(20), GETDATE(), 113) + ''''
+DECLARE @ret int;
+EXEC @ret = sysVersionGuidPrepare @versionGuid = '5BD5C470-355A-49ED-B93D-249F08E4A355',
+                                  @dateMarked  = '17 Mar 2010 17:28:42',
+                                  @description = 'alexa: link stroke data to new definitions structure instead of old one';
+GO
+DECLARE @ret int, @options int, @oldNoCountValue bit; 
+BEGIN TRANSACTION;
+EXEC @ret = sysVersionGuidLog; 
+IF (@ret = -1) 	BEGIN ROLLBACK TRANSACTION; SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;	DELETE #VersionGuidTmp; IF @oldNoCountValue = 0 SET NOCOUNT OFF;	END
+ELSE BEGIN
+------------------------------------------------------------------------------------------------------------------------------------
+--ALTER TABLE StrokeFieldValue
+	--DROP CONSTRAINT FK_StrokeFieldValue_FieldDefinition;
+ALTER TABLE StrokeFieldValue
+	ADD CONSTRAINT FK_StrokeFieldValue_EurekaField
+	FOREIGN KEY ([FieldID]) 
+		REFERENCES [dbo].[EurekaField] ([ID]) 
+		ON UPDATE NO ACTION
+		ON DELETE NO ACTION;
+-------------------------------------------------------------------------------------------------------------------------------------
+	EXEC sysVersionGuidCommit;
+	COMMIT TRANSACTION;
+END
+GO
+--) '5BD5C470-355A-49ED-B93D-249F08E4A355'
+
+
+--(
+-- Select the expression below (not including leading -- ) and execute by press F5. Copy result Guid from Messages windows and 
+-- paste it to initialize @versionGuid and @dateMarked of your block. Don't forget change @description
+-- PRINT '''' + CAST(NEWID() as varchar(36)) + '''' + CAST(0x0D0A as varchar(2)) + '''' + CONVERT(varchar(20), GETDATE(), 113) + ''''
+DECLARE @ret int;
+EXEC @ret = sysVersionGuidPrepare @versionGuid = 'B9DFF134-624A-4E72-9A62-EEF205DBDF01',
+                                  @dateMarked  = '18 Mar 2010 17:12:18',
+                                  @description = 'alexa: added one more optinal FK alienValue to eurekaValue';
+GO
+DECLARE @ret int, @options int, @oldNoCountValue bit; 
+BEGIN TRANSACTION;
+EXEC @ret = sysVersionGuidLog; 
+IF (@ret = -1) 	BEGIN ROLLBACK TRANSACTION; SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;	DELETE #VersionGuidTmp; IF @oldNoCountValue = 0 SET NOCOUNT OFF;	END
+ELSE BEGIN
+------------------------------------------------------------------------------------------------------------------------------------
+ALTER TABLE AlienValue
+	ADD CONSTRAINT FK_AlienValue_EurekaValue
+	FOREIGN KEY ([EurekaValueID]) 
+		REFERENCES [dbo].[EurekaValue] ([ID]) 
+		ON UPDATE NO ACTION
+		ON DELETE NO ACTION;
+		
+		Alter table UploadLog 
+		ADD CONSTRAINT FK_UploadLog_Format
+		FOREIGN KEY ([FormatID]) 
+		REFERENCES [dbo].[Format] ([ID]) 
+		ON UPDATE NO ACTION
+		ON DELETE NO ACTION;
+-------------------------------------------------------------------------------------------------------------------------------------
+	EXEC sysVersionGuidCommit;
+	COMMIT TRANSACTION;
+END
+GO
+--) 'B9DFF134-624A-4E72-9A62-EEF205DBDF01'
+
+
+--(
+-- Select the expression below (not including leading -- ) and execute by press F5. Copy result Guid from Messages windows and 
+-- paste it to initialize @versionGuid and @dateMarked of your block. Don't forget change @description
+-- PRINT '''' + CAST(NEWID() as varchar(36)) + '''' + CAST(0x0D0A as varchar(2)) + '''' + CONVERT(varchar(20), GETDATE(), 113) + ''''
+DECLARE @ret int;
+EXEC @ret = sysVersionGuidPrepare @versionGuid = '74F172A7-E460-4EC6-ADC3-7A5560D808C9',
+                                  @dateMarked  = '21 Mar 2010 13:24:18',
+                                  @description = 'alexa: provided status for the format';
+GO
+DECLARE @ret int, @options int, @oldNoCountValue bit; 
+BEGIN TRANSACTION;
+EXEC @ret = sysVersionGuidLog; 
+IF (@ret = -1) 	BEGIN ROLLBACK TRANSACTION; SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;	DELETE #VersionGuidTmp; IF @oldNoCountValue = 0 SET NOCOUNT OFF;	END
+ELSE BEGIN
+------------------------------------------------------------------------------------------------------------------------------------
+ALTER TABLE Format ADD Status smallint NULL CONSTRAINT DF_Format_Status DEFAULT(0);
+-------------------------------------------------------------------------------------------------------------------------------------
+	EXEC sysVersionGuidCommit;
+	COMMIT TRANSACTION;
+END
+GO
+--) '74F172A7-E460-4EC6-ADC3-7A5560D808C9'
+
+--(
+-- Select the expression below (not including leading -- ) and execute by press F5. Copy result Guid from Messages windows and 
+-- paste it to initialize @versionGuid and @dateMarked of your block. Don't forget change @description
+-- PRINT '''' + CAST(NEWID() as varchar(36)) + '''' + CAST(0x0D0A as varchar(2)) + '''' + CONVERT(varchar(20), GETDATE(), 113) + ''''
+DECLARE @ret int;
+EXEC @ret = sysVersionGuidPrepare @versionGuid = '2FA7015B-55CB-4BA2-842F-FEDD6EAB24AE',
+                                  @dateMarked  = '21 Mar 2010 13:49:10',
+                                  @description = 'alexa: set all formats as existing';
+GO
+DECLARE @ret int, @options int, @oldNoCountValue bit; 
+BEGIN TRANSACTION;
+EXEC @ret = sysVersionGuidLog; 
+IF (@ret = -1) 	BEGIN ROLLBACK TRANSACTION; SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;	DELETE #VersionGuidTmp; IF @oldNoCountValue = 0 SET NOCOUNT OFF;	END
+ELSE BEGIN
+------------------------------------------------------------------------------------------------------------------------------------
+UPDATE Format SET Status=1;
+-------------------------------------------------------------------------------------------------------------------------------------
+	EXEC sysVersionGuidCommit;
+	COMMIT TRANSACTION;
+END
+GO
+--) '2FA7015B-55CB-4BA2-842F-FEDD6EAB24AE'
+
+
+
+--(
+-- Select the expression below (not including leading -- ) and execute by press F5. Copy result Guid from Messages windows and 
+-- paste it to initialize @versionGuid and @dateMarked of your block. Don't forget change @description
+-- PRINT '''' + CAST(NEWID() as varchar(36)) + '''' + CAST(0x0D0A as varchar(2)) + '''' + CONVERT(varchar(20), GETDATE(), 113) + ''''
+DECLARE @ret int;
+EXEC @ret = sysVersionGuidPrepare @versionGuid = 'D9D428C7-BC28-4D06-A1A8-76EFAABA82C1',
+                                  @dateMarked  = '02 Apr 2010 08:15:39',
+                                  @description = 'alexa: added IsNew field to FieldDefinition for Eureka native fields 2';
+GO
+DECLARE @ret int, @options int, @oldNoCountValue bit; 
+BEGIN TRANSACTION;
+EXEC @ret = sysVersionGuidLog; 
+IF (@ret = -1) 	BEGIN ROLLBACK TRANSACTION; SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;	DELETE #VersionGuidTmp; IF @oldNoCountValue = 0 SET NOCOUNT OFF;	END
+ELSE BEGIN
+------------------------------------------------------------------------------------------------------------------------------------
+ALTER TABLE [dbo].[EurekaField] ADD [IsNew] bit NOT NULL DEFAULT(1);
+-------------------------------------------------------------------------------------------------------------------------------------
+	EXEC sysVersionGuidCommit;
+	COMMIT TRANSACTION;
+END
+GO
+--) 'D9D428C7-BC28-4D06-A1A8-76EFAABA82C1'
+
+--(
+-- Select the expression below (not including leading -- ) and execute by press F5. Copy result Guid from Messages windows and 
+-- paste it to initialize @versionGuid and @dateMarked of your block. Don't forget change @description
+-- PRINT '''' + CAST(NEWID() as varchar(36)) + '''' + CAST(0x0D0A as varchar(2)) + '''' + CONVERT(varchar(20), GETDATE(), 113) + ''''
+DECLARE @ret int;
+EXEC @ret = sysVersionGuidPrepare @versionGuid = 'AB8573CC-FE65-4F1C-8C12-7069EE489622',
+                                  @dateMarked  = '02 Apr 2010 08:16:11',
+                                  @description = 'alexa: made all existing fields as not new 2';
+GO
+DECLARE @ret int, @options int, @oldNoCountValue bit; 
+BEGIN TRANSACTION;
+EXEC @ret = sysVersionGuidLog; 
+IF (@ret = -1) 	BEGIN ROLLBACK TRANSACTION; SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;	DELETE #VersionGuidTmp; IF @oldNoCountValue = 0 SET NOCOUNT OFF;	END
+ELSE BEGIN
+------------------------------------------------------------------------------------------------------------------------------------
+UPDATE [dbo].[EurekaField] SET [IsNew] = 0;
+-------------------------------------------------------------------------------------------------------------------------------------
+	EXEC sysVersionGuidCommit;
+	COMMIT TRANSACTION;
+END
+GO
+--) 'AB8573CC-FE65-4F1C-8C12-7069EE489622'
+
+
+
+--(
+-- Select the expression below (not including leading -- ) and execute by press F5. Copy result Guid from Messages windows and 
+-- paste it to initialize @versionGuid and @dateMarked of your block. Don't forget change @description
+-- PRINT '''' + CAST(NEWID() as varchar(36)) + '''' + CAST(0x0D0A as varchar(2)) + '''' + CONVERT(varchar(20), GETDATE(), 113) + ''''
+DECLARE @ret int;
+EXEC @ret = sysVersionGuidPrepare @versionGuid = 'EE27610E-E08E-4631-B3E6-D15D6A314463',
+                                  @dateMarked  = '05 Apr 2010 21:57:35',
+                                  @description = 'alexl: add indexes';
+GO
+DECLARE @ret int, @options int, @oldNoCountValue bit; 
+BEGIN TRANSACTION;
+EXEC @ret = sysVersionGuidLog; 
+IF (@ret = -1) 	BEGIN ROLLBACK TRANSACTION; SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;	DELETE #VersionGuidTmp; IF @oldNoCountValue = 0 SET NOCOUNT OFF;	END
+ELSE BEGIN
+------------------------------------------------------------------------------------------------------------------------------------
+
+/****** Object:  Index [ix_StrokeFieldValue_Field]    Script Date: 04/05/2010 20:09:13 ******/
+CREATE NONCLUSTERED INDEX [ix_StrokeFieldValue_Field] ON [dbo].[StrokeFieldValue] 
+(
+	[FieldID] ASC
+)
+INCLUDE ( [StringValue],
+[Status]) WITH (PAD_INDEX  = OFF, STATISTICS_NORECOMPUTE  = OFF, SORT_IN_TEMPDB = OFF, IGNORE_DUP_KEY = OFF, DROP_EXISTING = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS  = ON, ALLOW_PAGE_LOCKS  = ON) ON [PRIMARY]
+
+
+/****** Object:  Index [ix_StrokeFieldValue_StrokeData]    Script Date: 04/05/2010 20:12:00 ******/
+CREATE NONCLUSTERED INDEX [ix_StrokeFieldValue_StrokeData] ON [dbo].[StrokeFieldValue] 
+(
+	[StrokeDataID] ASC
+)
+INCLUDE ( [StringValue],
+[Status]) WITH (PAD_INDEX  = OFF, STATISTICS_NORECOMPUTE  = OFF, SORT_IN_TEMPDB = OFF, IGNORE_DUP_KEY = OFF, DROP_EXISTING = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS  = ON, ALLOW_PAGE_LOCKS  = ON) ON [PRIMARY]
+
+
+/****** Object:  Index [ix_AlienField_EurekaField]    Script Date: 04/05/2010 20:14:30 ******/
+CREATE NONCLUSTERED INDEX [ix_AlienField_EurekaField] ON [dbo].[AlienField] 
+(
+	[EurekaFieldID] ASC
+)WITH (PAD_INDEX  = OFF, STATISTICS_NORECOMPUTE  = OFF, SORT_IN_TEMPDB = OFF, IGNORE_DUP_KEY = OFF, DROP_EXISTING = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS  = ON, ALLOW_PAGE_LOCKS  = ON) ON [PRIMARY]
+
+
+/****** Object:  Index [ix_AlienField_Format]    Script Date: 04/05/2010 20:14:45 ******/
+CREATE NONCLUSTERED INDEX [ix_AlienField_Format] ON [dbo].[AlienField] 
+(
+	[FormatID] ASC
+)WITH (PAD_INDEX  = OFF, STATISTICS_NORECOMPUTE  = OFF, SORT_IN_TEMPDB = OFF, IGNORE_DUP_KEY = OFF, DROP_EXISTING = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS  = ON, ALLOW_PAGE_LOCKS  = ON) ON [PRIMARY]
+
+
+CREATE NONCLUSTERED INDEX [ix_AlienValue_EurekaField] ON [dbo].[AlienValue] 
+(
+	[EurekaFieldID] ASC
+)WITH (PAD_INDEX  = OFF, STATISTICS_NORECOMPUTE  = OFF, SORT_IN_TEMPDB = OFF, IGNORE_DUP_KEY = OFF, DROP_EXISTING = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS  = ON, ALLOW_PAGE_LOCKS  = ON) ON [PRIMARY]
+
+/****** Object:  Index [ix_AlienValue_EurekaValue]    Script Date: 04/05/2010 20:19:45 ******/
+CREATE NONCLUSTERED INDEX [ix_AlienValue_EurekaValue] ON [dbo].[AlienValue] 
+(
+	[EurekaValueID] ASC
+)WITH (PAD_INDEX  = OFF, STATISTICS_NORECOMPUTE  = OFF, SORT_IN_TEMPDB = OFF, IGNORE_DUP_KEY = OFF, DROP_EXISTING = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS  = ON, ALLOW_PAGE_LOCKS  = ON) ON [PRIMARY]
+
+/****** Object:  Index [ix_AlienValue_Format]    Script Date: 04/05/2010 20:20:04 ******/
+CREATE NONCLUSTERED INDEX [ix_AlienValue_Format] ON [dbo].[AlienValue] 
+(
+	[FormatID] ASC
+)WITH (PAD_INDEX  = OFF, STATISTICS_NORECOMPUTE  = OFF, SORT_IN_TEMPDB = OFF, IGNORE_DUP_KEY = OFF, DROP_EXISTING = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS  = ON, ALLOW_PAGE_LOCKS  = ON) ON [PRIMARY]
+
+/****** Object:  Index [ix_AuditLog_FieldValue]    Script Date: 04/05/2010 21:38:56 ******/
+CREATE NONCLUSTERED INDEX [ix_AuditLog_FieldValue] ON [dbo].[AuditLog] 
+(
+	[FieldValueID] ASC
+)WITH (PAD_INDEX  = OFF, STATISTICS_NORECOMPUTE  = OFF, SORT_IN_TEMPDB = OFF, IGNORE_DUP_KEY = OFF, DROP_EXISTING = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS  = ON, ALLOW_PAGE_LOCKS  = ON) ON [PRIMARY]
+
+
+/****** Object:  Index [ix_AuditLog_UploadLog]    Script Date: 04/05/2010 21:39:23 ******/
+CREATE NONCLUSTERED INDEX [ix_AuditLog_UploadLog] ON [dbo].[AuditLog] 
+(
+	[UploadLogID] ASC
+)WITH (PAD_INDEX  = OFF, STATISTICS_NORECOMPUTE  = OFF, SORT_IN_TEMPDB = OFF, IGNORE_DUP_KEY = OFF, DROP_EXISTING = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS  = ON, ALLOW_PAGE_LOCKS  = ON) ON [PRIMARY]
+
+
+/****** Object:  Index [ix_EurekaField_Format]    Script Date: 04/05/2010 21:40:30 ******/
+CREATE NONCLUSTERED INDEX [ix_EurekaField_Format] ON [dbo].[EurekaField] 
+(
+	[FormatID] ASC
+)WITH (PAD_INDEX  = OFF, STATISTICS_NORECOMPUTE  = OFF, SORT_IN_TEMPDB = OFF, IGNORE_DUP_KEY = OFF, DROP_EXISTING = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS  = ON, ALLOW_PAGE_LOCKS  = ON) ON [PRIMARY]
+
+
+/****** Object:  Index [ix_EurekaValue_EurekaField]    Script Date: 04/05/2010 21:42:42 ******/
+CREATE NONCLUSTERED INDEX [ix_EurekaValue_EurekaField] ON [dbo].[EurekaValue] 
+(
+	[EurekaFieldID] ASC
+)WITH (PAD_INDEX  = OFF, STATISTICS_NORECOMPUTE  = OFF, SORT_IN_TEMPDB = OFF, IGNORE_DUP_KEY = OFF, DROP_EXISTING = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS  = ON, ALLOW_PAGE_LOCKS  = ON) ON [PRIMARY]
+
+
+/****** Object:  Index [ix_Facility_Format]    Script Date: 04/05/2010 21:44:11 ******/
+CREATE NONCLUSTERED INDEX [ix_Facility_Format] ON [dbo].[Facility] 
+(
+	[FormatID] ASC
+)WITH (PAD_INDEX  = OFF, STATISTICS_NORECOMPUTE  = OFF, SORT_IN_TEMPDB = OFF, IGNORE_DUP_KEY = OFF, DROP_EXISTING = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS  = ON, ALLOW_PAGE_LOCKS  = ON) ON [PRIMARY]
+
+IF EXISTS(SELECT name FROM sysindexes WHERE name = 'StrokeData_idx')
+	drop index StrokeData.StrokeData_idx;
+
+/****** Object:  Index [ix_StrokeData_KeyFields]    Script Date: 04/05/2010 21:48:12 ******/
+CREATE NONCLUSTERED INDEX [ix_StrokeData_KeyFields] ON [dbo].[StrokeData] 
+(
+	[PatientID] ASC,
+	[AdmissionDate] ASC
+)WITH (PAD_INDEX  = OFF, STATISTICS_NORECOMPUTE  = OFF, SORT_IN_TEMPDB = OFF, IGNORE_DUP_KEY = OFF, DROP_EXISTING = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS  = ON, ALLOW_PAGE_LOCKS  = ON) ON [PRIMARY]
+
+/****** Object:  Index [ix_StrokeData_Status]    Script Date: 04/05/2010 21:48:39 ******/
+CREATE NONCLUSTERED INDEX [ix_StrokeData_Status] ON [dbo].[StrokeData] 
+(
+	[Status] ASC
+)WITH (PAD_INDEX  = OFF, STATISTICS_NORECOMPUTE  = OFF, SORT_IN_TEMPDB = OFF, IGNORE_DUP_KEY = OFF, DROP_EXISTING = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS  = ON, ALLOW_PAGE_LOCKS  = ON) ON [PRIMARY]
+
+
+
+/****** Object:  Index [UploadLog_Facility]    Script Date: 04/05/2010 21:50:18 ******/
+CREATE NONCLUSTERED INDEX [ix_UploadLog_Facility] ON [dbo].[UploadLog] 
+(
+	[FacilityID] ASC
+)WITH (PAD_INDEX  = OFF, STATISTICS_NORECOMPUTE  = OFF, SORT_IN_TEMPDB = OFF, IGNORE_DUP_KEY = OFF, DROP_EXISTING = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS  = ON, ALLOW_PAGE_LOCKS  = ON) ON [PRIMARY]
+
+/****** Object:  Index [UploadLog_Format]    Script Date: 04/05/2010 21:51:16 ******/
+CREATE NONCLUSTERED INDEX [ix_UploadLog_Format] ON [dbo].[UploadLog] 
+(
+	[FormatID] ASC
+)WITH (PAD_INDEX  = OFF, STATISTICS_NORECOMPUTE  = OFF, SORT_IN_TEMPDB = OFF, IGNORE_DUP_KEY = OFF, DROP_EXISTING = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS  = ON, ALLOW_PAGE_LOCKS  = ON) ON [PRIMARY]
+
+/****** Object:  Index [UploadLogStrokeData_UploadLog]    Script Date: 04/05/2010 21:53:21 ******/
+CREATE NONCLUSTERED INDEX [ix_UploadLogStrokeData_UploadLog] ON [dbo].[UploadLogStrokeData] 
+(
+	[UploadLogID] ASC
+)WITH (PAD_INDEX  = OFF, STATISTICS_NORECOMPUTE  = OFF, SORT_IN_TEMPDB = OFF, IGNORE_DUP_KEY = OFF, DROP_EXISTING = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS  = ON, ALLOW_PAGE_LOCKS  = ON) ON [PRIMARY]
+
+
+/****** Object:  Index [UploadLogStrokeData_StrokeData]    Script Date: 04/05/2010 21:53:47 ******/
+CREATE NONCLUSTERED INDEX [ix_UploadLogStrokeData_StrokeData] ON [dbo].[UploadLogStrokeData] 
+(
+	[StrokeDataID] ASC
+)WITH (PAD_INDEX  = OFF, STATISTICS_NORECOMPUTE  = OFF, SORT_IN_TEMPDB = OFF, IGNORE_DUP_KEY = OFF, DROP_EXISTING = OFF, ONLINE = OFF, ALLOW_ROW_LOCKS  = ON, ALLOW_PAGE_LOCKS  = ON) ON [PRIMARY]
+
+
+-------------------------------------------------------------------------------------------------------------------------------------
+	EXEC sysVersionGuidCommit;
+	COMMIT TRANSACTION;
+END
+GO
+--) 'EE27610E-E08E-4631-B3E6-D15D6A314463'
+
+
+--(
+-- Select the expression below (not including leading -- ) and execute by press F5. Copy result Guid from Messages windows and 
+-- paste it to initialize @versionGuid and @dateMarked of your block. Don't forget change @description
+-- PRINT '''' + CAST(NEWID() as varchar(36)) + '''' + CAST(0x0D0A as varchar(2)) + '''' + CONVERT(varchar(20), GETDATE(), 113) + ''''
+DECLARE @ret int;
+EXEC @ret = sysVersionGuidPrepare @versionGuid = 'DB67839D-8463-4051-8EC2-91421FBD9F9A',
+                                  @dateMarked  = '10 Apr 2010 17:12:24',
+                                  @description = 'alexa: provided smaller size for text fields';
+GO
+DECLARE @ret int, @options int, @oldNoCountValue bit; 
+BEGIN TRANSACTION;
+EXEC @ret = sysVersionGuidLog; 
+IF (@ret = -1) 	BEGIN ROLLBACK TRANSACTION; SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;	DELETE #VersionGuidTmp; IF @oldNoCountValue = 0 SET NOCOUNT OFF;	END
+ELSE BEGIN
+------------------------------------------------------------------------------------------------------------------------------------
+ALTER TABLE Format ALTER COLUMN [Name] varchar(100) NOT NULL;
+ALTER TABLE Facility ALTER COLUMN [Name] varchar(100) NOT NULL;
+ALTER TABLE UploadLog ALTER COLUMN [Filename] varchar(100) NOT NULL;
+ALTER TABLE UploadLog ALTER COLUMN [OriginalFilename] varchar(100) NOT NULL;
+-------------------------------------------------------------------------------------------------------------------------------------
+	EXEC sysVersionGuidCommit;
+	COMMIT TRANSACTION;
+END
+GO
+--) 'DB67839D-8463-4051-8EC2-91421FBD9F9A'
+
+--(
+-- Select the expression below (not including leading -- ) and execute by press F5. Copy result Guid from Messages windows and 
+-- paste it to initialize @versionGuid and @dateMarked of your block. Don't forget change @description
+-- PRINT '''' + CAST(NEWID() as varchar(36)) + '''' + CAST(0x0D0A as varchar(2)) + '''' + CONVERT(varchar(20), GETDATE(), 113) + ''''
+DECLARE @ret int;
+EXEC @ret = sysVersionGuidPrepare @versionGuid = 'E02C3C32-5B50-4E0F-B5AD-01A161D44AB8',
+                                  @dateMarked  = '6 May 2010 17:12:24',
+                                  @description = 'alexl: add [BusinessRuleCheckResults]';
+GO
+DECLARE @ret int, @options int, @oldNoCountValue bit; 
+BEGIN TRANSACTION;
+EXEC @ret = sysVersionGuidLog; 
+IF (@ret = -1) 	BEGIN ROLLBACK TRANSACTION; SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;	DELETE #VersionGuidTmp; IF @oldNoCountValue = 0 SET NOCOUNT OFF;	END
+ELSE BEGIN
+------------------------------------------------------------------------------------------------------------------------------------
+CREATE TABLE BusinessRuleCheckResults (
+  [ID] int IDENTITY(1, 1) NOT NULL,
+  [StrokeDataID] int NOT NULL,
+  [RuleID] int NOT NULL,
+  [RuleBreaker] bit NOT NULL,
+  [ErrorMessage] varchar(1024) NOT NULL,
+  PRIMARY KEY CLUSTERED ([ID]),
+  CONSTRAINT [BusinessRuleCheckResults_fk] FOREIGN KEY ([StrokeDataID]) 
+  REFERENCES StrokeData ([ID]) 
+  ON UPDATE NO ACTION
+  ON DELETE NO ACTION
+)
+ON [PRIMARY]
+-------------------------------------------------------------------------------------------------------------------------------------
+	EXEC sysVersionGuidCommit;
+	COMMIT TRANSACTION;
+END
+GO
+--) 'E02C3C32-5B50-4E0F-B5AD-01A161D44AB8'
+
+
+
+--(
+-- Select the expression below (not including leading -- ) and execute by press F5. Copy result Guid from Messages windows and 
+-- paste it to initialize @versionGuid and @dateMarked of your block. Don't forget change @description
+-- PRINT '''' + CAST(NEWID() as varchar(36)) + '''' + CAST(0x0D0A as varchar(2)) + '''' + CONVERT(varchar(20), GETDATE(), 113) + ''''
+DECLARE @ret int;
+EXEC @ret = sysVersionGuidPrepare @versionGuid = '93B88974-4DD2-4EB2-A3DF-CB8BF88D7996',
+                                  @dateMarked  = '20 Jul 2010 14:05:02',
+                                  @description = 'alexa: add [FormatRecordKeyIDs]';
+GO
+DECLARE @ret int, @options int, @oldNoCountValue bit; 
+BEGIN TRANSACTION;
+EXEC @ret = sysVersionGuidLog; 
+IF (@ret = -1) 	BEGIN ROLLBACK TRANSACTION; SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;	DELETE #VersionGuidTmp; IF @oldNoCountValue = 0 SET NOCOUNT OFF;	END
+ELSE BEGIN
+------------------------------------------------------------------------------------------------------------------------------------
+--DROP TABLE KeyEurekaField;
+CREATE TABLE KeyEurekaField (
+  --[ID] int IDENTITY(1, 1) NOT NULL,
+  [FormatID] int NOT NULL,
+  [EurekaFieldID] int NOT NULL,
+  PRIMARY KEY NONCLUSTERED ([FormatID], [EurekaFieldID]),
+  CONSTRAINT [FK_FormatRecordKeyIDs_FormatID] 
+	FOREIGN KEY ([FormatID]) 
+	REFERENCES Format ([ID]) 
+	ON UPDATE NO ACTION
+	ON DELETE NO ACTION,
+  CONSTRAINT [FK_FormatRecordKeyIDs_EurekaFieldID] 
+	FOREIGN KEY ([EurekaFieldID]) 
+	REFERENCES EurekaField ([ID]) 
+	ON UPDATE NO ACTION
+	ON DELETE NO ACTION
+)
+ON [PRIMARY]
+-------------------------------------------------------------------------------------------------------------------------------------
+	EXEC sysVersionGuidCommit;
+	COMMIT TRANSACTION;
+END
+GO
+--) '93B88974-4DD2-4EB2-A3DF-CB8BF88D7996'
+
+
+
+
+--(
+-- Select the expression below (not including leading -- ) and execute by press F5. Copy result Guid from Messages windows and 
+-- paste it to initialize @versionGuid and @dateMarked of your block. Don't forget change @description
+-- PRINT '''' + CAST(NEWID() as varchar(36)) + '''' + CAST(0x0D0A as varchar(2)) + '''' + CONVERT(varchar(20), GETDATE(), 113) + ''''
+DECLARE @ret int;
+EXEC @ret = sysVersionGuidPrepare @versionGuid = '863A0F3D-E3F3-417B-9334-0DACFAF0540F',
+                                  @dateMarked  = '17 Aug 2010 12:11:20',
+                                  @description = 'alexa: added custom reports objects';
+GO
+DECLARE @ret int, @options int, @oldNoCountValue bit; 
+BEGIN TRANSACTION;
+EXEC @ret = sysVersionGuidLog; 
+IF (@ret = -1) 	BEGIN ROLLBACK TRANSACTION; SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;	DELETE #VersionGuidTmp; IF @oldNoCountValue = 0 SET NOCOUNT OFF;	END
+ELSE BEGIN
+------------------------------------------------------------------------------------------------------------------------------------
+
+CREATE TABLE Folder (
+  [ID] int IDENTITY(1, 1) NOT NULL,
+  [Name] varchar(128) NOT NULL,
+  [Rank] int NOT NULL,
+  [Enabled] bit NOT NULL,
+  PRIMARY KEY NONCLUSTERED ([ID])
+)
+ON [PRIMARY];
+
+CREATE TABLE Report (
+  [ID] int IDENTITY(1, 1) NOT NULL,
+  [Name] varchar(128) NOT NULL,
+  [Description] varchar(max) NULL,
+  [Enabled] bit NOT NULL,
+  [FolderID] int NOT NULL,
+  PRIMARY KEY NONCLUSTERED ([ID]),
+  CONSTRAINT [FK_Report_FolderID] 
+	FOREIGN KEY ([FolderID]) 
+	REFERENCES Folder ([ID]) 
+	ON UPDATE NO ACTION
+	ON DELETE NO ACTION
+)
+ON [PRIMARY];
+
+CREATE TABLE UserFolder (
+  [FolderID] int NOT NULL,
+  [UserID] int NOT NULL,
+  PRIMARY KEY NONCLUSTERED ([FolderID], [UserID]),
+  CONSTRAINT [FK_UserFolder_FolderID] 
+	FOREIGN KEY ([FolderID]) 
+	REFERENCES Folder ([ID]) 
+	ON UPDATE NO ACTION
+	ON DELETE NO ACTION
+)
+ON [PRIMARY];
+
+CREATE TABLE UserReport (
+  [ReportID] int NOT NULL,
+  [UserID] int NOT NULL,
+  PRIMARY KEY NONCLUSTERED ([ReportID], [UserID]),
+  CONSTRAINT [FK_UserReport_ReportID] 
+	FOREIGN KEY ([ReportID]) 
+	REFERENCES Report ([ID]) 
+	ON UPDATE NO ACTION
+	ON DELETE NO ACTION
+)
+ON [PRIMARY];
+
+CREATE TABLE UserFacility (
+  [FacilityID] int NOT NULL,
+  [UserID] int NOT NULL,
+  PRIMARY KEY NONCLUSTERED ([FacilityID], [UserID]),
+  CONSTRAINT [FK_UserFacility_FacilityID] 
+	FOREIGN KEY ([FacilityID]) 
+	REFERENCES Facility ([ID]) 
+	ON UPDATE NO ACTION
+	ON DELETE NO ACTION
+)
+ON [PRIMARY];
+
+CREATE TABLE UserReportingSource (
+  [ReportingSource] varchar(128) NOT NULL,
+  [UserID] int NOT NULL,
+  PRIMARY KEY NONCLUSTERED ([ReportingSource], [UserID])
+)
+ON [PRIMARY];
+
+-------------------------------------------------------------------------------------------------------------------------------------
+	EXEC sysVersionGuidCommit;
+	COMMIT TRANSACTION;
+END
+GO
+--) '863A0F3D-E3F3-417B-9334-0DACFAF0540F'
+
+
+
+--(
+-- Select the expression below (not including leading -- ) and execute by press F5. Copy result Guid from Messages windows and 
+-- paste it to initialize @versionGuid and @dateMarked of your block. Don't forget change @description
+-- PRINT '''' + CAST(NEWID() as varchar(36)) + '''' + CAST(0x0D0A as varchar(2)) + '''' + CONVERT(varchar(20), GETDATE(), 113) + ''''
+DECLARE @ret int;
+EXEC @ret = sysVersionGuidPrepare @versionGuid = '8D5CF35A-F90B-4E6B-B6DE-6395AE04D5FE',
+                                  @dateMarked  = '20 Aug 2010 13:41:40',
+                                  @description = 'alexa: added ReportingSource';
+GO
+DECLARE @ret int, @options int, @oldNoCountValue bit; 
+BEGIN TRANSACTION;
+EXEC @ret = sysVersionGuidLog; 
+IF (@ret = -1) 	BEGIN ROLLBACK TRANSACTION; SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;	DELETE #VersionGuidTmp; IF @oldNoCountValue = 0 SET NOCOUNT OFF;	END
+ELSE BEGIN
+------------------------------------------------------------------------------------------------------------------------------------
+ALTER TABLE StrokeData ADD ReportingSource varchar(128) NULL;
+-------------------------------------------------------------------------------------------------------------------------------------
+	EXEC sysVersionGuidCommit;
+	COMMIT TRANSACTION;
+END
+GO
+--) '8D5CF35A-F90B-4E6B-B6DE-6395AE04D5FE'
+
+
+-----------------------------------------------------
+-- !!!  insert new versions before this block  !!!!!!
+-- !!!  INSERT NEW VERSIONS BEFORE THIS BLOCK  !!!!!!
+-----------------------------------------------------
+IF EXISTS(SELECT * FROM #VersionGuidTmp) PRINT 'Not all block applied! See previous error...';
+PRINT 'Checking latest applied VersionGuid...';
+DECLARE @result varchar(8000);
+SELECT TOP (1) @result = 'Current latest VersionGuid: ' + CAST([Guid] AS varchar(36)) + '
+        Date Marked:  ' + CONVERT(varchar(30),[dateMarked],121) + '
+        Date Applied: ' + CONVERT(varchar(30),[dateApplied],121) + '
+        Description:  ' + [description] + '
+' FROM [dbo].[VersionGuid]
+ORDER BY [dateApplied] DESC,[dateMarked] DESC;
+PRINT @result;
+IF (OBJECT_ID('tempdb..#VersionGuidTmp') IS NOT NULL)
+	DROP TABLE #VersionGuidTmp;
+GO
+
+/******************************************************************
+ ** Insert new auto-changes by the TEMPLATE BLOCK below ...     ***
+ ** Just remove heading ---- in every line (as vertical block)  ***
+ ******************************************************************/
+
+--(
+-- Select the expression below (not including leading -- ) and execute by press F5. Copy result Guid from Messages windows and 
+-- paste it to initialize @versionGuid and @dateMarked of your block. Don't forget change @description
+-- PRINT '''' + CAST(NEWID() as varchar(36)) + '''' + CAST(0x0D0A as varchar(2)) + '''' + CONVERT(varchar(20), GETDATE(), 113) + ''''
+
+----DECLARE @ret int;
+----EXEC @ret = sysVersionGuidPrepare @versionGuid = 'XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX',
+----                                  @dateMarked  = 'XX Jun 200X 00:00:00',
+----                                  @description = 'alexa: example Guid auto-change script block';
+----GO
+----DECLARE @ret int, @options int, @oldNoCountValue bit; 
+----BEGIN TRANSACTION;
+----EXEC @ret = sysVersionGuidLog; 
+----IF (@ret = -1) 	BEGIN ROLLBACK TRANSACTION; SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;	DELETE #VersionGuidTmp; IF @oldNoCountValue = 0 SET NOCOUNT OFF;	END
+----ELSE BEGIN
+------------------------------------------------------------------------------------------------------------------------------------
+----    -- Insert actual new auto-changes here.
+----    -- Don''t forget to remove all GO statements from your change script fragment.
+----    -- Do not turn off XACT_ABORT.
+----    -- Split to several consecutive versions your long changes, or the changes that require some their parts committed before apllying their further statements.
+-------------------------------------------------------------------------------------------------------------------------------------
+----	EXEC sysVersionGuidCommit;
+----	COMMIT TRANSACTION;
+----END
+----GO
+--) XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX
+
+/***************************************************************************
+ ** Remove here procedures/functions no more used after AutoChangesGuid  ***
+ ***************************************************************************/
+
+--IF  EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[TestFunction]') AND type in (N'FN', N'IF', N'TF', N'FS', N'FT'))
+--DROP FUNCTION [dbo].[TestFunction]
+GO
+
+GO 
+--D:\Projects\med\EurekaStroke\trunk\Sql\Views\StrokeUser.sql 
+PRINT 'Processing file: D:\Projects\med\EurekaStroke\trunk\Sql\Views\StrokeUser.sql...'  
+  
+GO  
+  
+IF  EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[StrokeUser]') AND type IN (N'V'))
+    DROP VIEW [dbo].[StrokeUser]
+GO
+
+
+CREATE VIEW StrokeUser
+AS
+select 1 as ID, 'Tester 1' as UserName
+union all
+select 2 as ID, 'Tester 2' as UserName
+union all
+select 3 as ID, 'Tester 3' as UserName
+union all
+select 4 as ID, 'Tester 4' as UserName
+union all
+select 5 as ID, 'Tester 5' as UserName;
+
+GO
+
+  
+GO  
+ 
+--D:\Projects\med\EurekaStroke\trunk\Sql\Functions\fnGetIDasTable.sql 
+PRINT 'Processing file: D:\Projects\med\EurekaStroke\trunk\Sql\Functions\fnGetIDasTable.sql...'  
+  
+GO  
+  
+/*
+DECLARE @s as varchar(max);
+SET @s = '2,5,10';
+select id from dbo.fnGetIDasTable(@s, ',');
+*/
+
+IF  EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[fnGetIDasTable]') AND type in (N'FN', N'IF', N'TF', N'FS', N'FT'))
+    DROP FUNCTION [dbo].[fnGetIDasTable]
+GO
+
+set ANSI_NULLS ON
+set QUOTED_IDENTIFIER ON
+GO
+
+CREATE FUNCTION [dbo].[fnGetIDasTable] (
+    @ids varchar(8000), 
+    @separator varchar(20)
+) RETURNS @retTable TABLE(ID int)
+BEGIN
+    DECLARE	@firstComma int
+    IF (@ids IS NOT NULL)
+    BEGIN
+	    WHILE @ids != ''
+	    BEGIN
+		    SET @firstComma = CHARINDEX(@separator, @ids)
+		    IF @firstComma = 0
+		    BEGIN
+			    INSERT INTO @retTable 
+                    VALUES (@ids)
+			    RETURN
+		    END
+		    INSERT INTO @retTable 
+                VALUES (CONVERT(int, SUBSTRING(@ids, 1, @firstComma - 1)))
+		    SET @ids = SUBSTRING(@ids, @firstComma + 1, LEN(@ids))
+	    END
+    END
+    RETURN
+END
+  
+GO  
+ 
+--D:\Projects\med\EurekaStroke\trunk\Sql\Functions\udf_GetChangesReport.sql 
+PRINT 'Processing file: D:\Projects\med\EurekaStroke\trunk\Sql\Functions\udf_GetChangesReport.sql...'  
+  
+GO  
+  
+IF  EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[udf_GetChangesReport]') AND type in (N'FN', N'IF', N'TF', N'FS', N'FT'))
+DROP FUNCTION [dbo].[udf_GetChangesReport]
+GO
+
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+CREATE FUNCTION [dbo].[udf_GetChangesReport] (
+@uploadLogID int = null
+)
+RETURNS TABLE
+AS
+RETURN (
+    select 
+	fac.[Name] as FacilityName, f.[Name] as FormatName,
+	u.OriginalFilename as [filename], u.StartedDate as UploadDate,
+	d.PatientID, d.AdmissionDate,
+	a.RowNumber, a.[Action], 
+        case a.[Action]
+            when 0 then 'Create'
+            when 1 then 'Update'
+            when 2 then 'Delete'
+            else 'Unknown'
+        end as ActionName,
+        a.ActionDate,
+        a.ActionUser, a.ErrorMessage, a.FieldName,
+        a.OldValue,
+        a.NextValue, a.[Status],
+
+        case a.[Status]
+            when 2 then 'Error'
+            when 0 then 'Success'
+            else 'Unknown'
+        end as StatusName
+
+    from AuditLog a
+    inner join UploadLog u
+    on a.UploadLogID = u.ID
+    inner join Facility fac
+    on u.FacilityID = fac.ID
+    inner join [Format] f
+    on u.FormatID = f.ID
+
+    inner join StrokeFieldValue v
+    on a.FieldValueID = v.ID
+    inner join StrokeData d
+    on v.StrokeDataID = d.ID
+  
+    where a.[Status]=0
+        and a.[Action]=1
+        and a.ItemType=0
+        and (a.UploadLogID = @uploadLogID or 
+        @uploadLogID is null or @uploadLogID = 0)
+)
+
+
+GO
+
+
+  
+GO  
+ 
+--D:\Projects\med\EurekaStroke\trunk\Sql\Functions\udf_GetDataDictionary.sql 
+PRINT 'Processing file: D:\Projects\med\EurekaStroke\trunk\Sql\Functions\udf_GetDataDictionary.sql...'  
+  
+GO  
+  
+/****** Object:  UserDefinedFunction [dbo].[udf_GetDataDictionary]    Script Date: 04/15/2010 00:39:47 ******/
+IF  EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[udf_GetDataDictionary]') AND type in (N'FN', N'IF', N'TF', N'FS', N'FT'))
+	DROP FUNCTION [dbo].[udf_GetDataDictionary]
+GO
+
+/****** Object:  UserDefinedFunction [dbo].[udf_GetDataDictionary]    Script Date: 04/15/2010 00:39:47 ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE FUNCTION [dbo].[udf_GetDataDictionary] (
+)
+RETURNS TABLE
+AS
+RETURN (
+    select
+	e.ID as EurekaFieldID,
+	e.[Name] as EurekaFieldName,
+	e.[Description] as EurekaFieldDescription,
+    e.FieldType,
+    case e.FieldType
+            when 0 then 'String'
+            when 1 then 'Integer'
+            when 2 then 'Boolean'
+            when 3 then 'Decimal'
+            when 4 then 'DateTime'
+            when 5 then 'SingleSelect'
+            when 5 then 'MultipleSelect'
+            else 'Unknown'
+    end as FieldTypeName,
+    
+    ev.[Value] as [EurekaValue],
+    ev.[Description] as [EurekaValueDescription]
+
+    from EurekaField e
+        
+    left outer join EurekaValue ev
+    on e.ID = ev.EurekaFieldID
+    
+		
+)
+
+GO
+  
+GO  
+ 
+--D:\Projects\med\EurekaStroke\trunk\Sql\Functions\udf_GetErrorReport.sql 
+PRINT 'Processing file: D:\Projects\med\EurekaStroke\trunk\Sql\Functions\udf_GetErrorReport.sql...'  
+  
+GO  
+  
+IF  EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[udf_GetErrorReport]') AND type in (N'FN', N'IF', N'TF', N'FS', N'FT'))
+	DROP FUNCTION [dbo].[udf_GetErrorReport]
+GO
+
+
+/****** Object:  UserDefinedFunction [dbo].[udf_GetErrorReport]    Script Date: 04/17/2010 22:50:02 ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+CREATE FUNCTION [dbo].[udf_GetErrorReport] (
+@uploadLogID int = null
+)
+RETURNS TABLE
+AS
+RETURN (
+    select
+		fac.[Name] as FacilityName, f.[Name] as FormatName,
+		u.OriginalFilename as [filename], u.StartedDate as UploadDate,
+		isnull(d.PatientID,'N/A') as PatientID, 
+		isnull(d.AdmissionDate,a.ActionDate) as AdmissionDate,   
+        a.RowNumber, 
+        a.[Action],
+
+        case a.[Action]
+            when 0 then 'Create'
+            when 1 then 'Update'
+            when 2 then 'Delete'
+            else 'Unknown'
+        end as ActionName
+
+        ,a.ActionDate,
+        a.ActionUser, a.ErrorMessage, a.FieldName,
+        a.OldValue,
+        a.NextValue, a.[Status],
+        case a.[Status]
+            when 2 then 'Error'
+            else 'Unknown'
+        end as StatusName
+
+    from AuditLog a
+	inner join UploadLog u
+	on a.UploadLogID = u.ID
+	inner join Facility fac
+	on u.FacilityID = fac.ID
+	inner join [Format] f
+	on u.FormatID = f.ID
+	left outer join StrokeFieldValue v
+	on a.FieldValueID = v.ID
+	left outer join StrokeData d
+	on v.StrokeDataID = d.ID
+  
+    where a.[Status]<>0
+        and a.ItemType=0
+        and (a.UploadLogID = @uploadLogID or 
+        @uploadLogID is null or 
+        @uploadLogID = 0)
+)
+
+
+GO
+
+
+  
+GO  
+ 
+--D:\Projects\med\EurekaStroke\trunk\Sql\Functions\_dropObsoleteFunctions.sql 
+PRINT 'Processing file: D:\Projects\med\EurekaStroke\trunk\Sql\Functions\_dropObsoleteFunctions.sql...'  
+  
+GO  
+  
+IF  EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[fn_ObsoleteFunction]') AND type in (N'FN', N'IF', N'TF', N'FS', N'FT'))
+DROP FUNCTION [dbo].[fn_ObsoleteFunction]
+GO
+
+  
+GO  
+ 
+--D:\Projects\med\EurekaStroke\trunk\Sql\Procedures\EurekaField_GetIndex.sql 
+PRINT 'Processing file: D:\Projects\med\EurekaStroke\trunk\Sql\Procedures\EurekaField_GetIndex.sql...'  
+  
+GO  
+  
+IF  EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[EurekaField_GetIndex]') AND type in (N'P', N'PC'))
+DROP PROCEDURE [dbo].[EurekaField_GetIndex]
+GO
+
+CREATE PROCEDURE [dbo].[EurekaField_GetIndex] 
+	@ID int
+AS
+	;WITH RowIndexes AS (
+		select ID, row_number() over(order by [Name]) AS RowIndex from  EurekaField
+	)
+	SELECT CAST(RowIndex AS int) FROM RowIndexes WHERE ID = @ID;
+GO
+  
+GO  
+ 
+--D:\Projects\med\EurekaStroke\trunk\Sql\Procedures\Pivot.sql 
+PRINT 'Processing file: D:\Projects\med\EurekaStroke\trunk\Sql\Procedures\Pivot.sql...'  
+  
+GO  
+  
+IF  EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[PivotStrokeData]') AND type IN (N'P', N'PC'))
+DROP PROCEDURE [dbo].[PivotStrokeData]
+GO
+
+
+CREATE PROCEDURE [dbo].[PivotStrokeData]
+AS
+BEGIN
+
+DECLARE @listCol VARCHAR(max)
+DECLARE @query VARCHAR(max)
+SELECT  @listCol = STUFF(( SELECT DISTINCT
+                                '],[' + ltrim(f.Name)
+                        FROM    StrokeDataView v
+                        inner join EurekaField f
+                        on v.FieldID = f.ID
+                        
+                        ORDER BY '],[' + ltrim(f.Name)
+                        FOR XML PATH('')
+                                    ), 1, 2, '') + ']'
+                                    
+print @listCol
+ 
+SET @query =
+'
+With src as (
+	SELECT d.ID, 
+      --d.PatientID as PatID, d.AdmissionDate as AdmDate, 
+			v.MultiValue as FieldValue, f.Name as FieldName
+       FROM    
+					StrokeData d
+					inner join StrokeDataView v
+					on d.ID = v.StrokeDataID
+                    inner join EurekaField f
+                    on v.FieldID = f.ID
+		    --where v.Status = 0
+
+)
+SELECT * FROM src
+PIVOT (Min(FieldValue) FOR FieldName
+IN ('+@listCol+')) AS pvt'
+
+print @query
+ 
+EXECUTE (@query)
+
+END
+
+GO
+
+  
+GO  
+ 
+--D:\Projects\med\EurekaStroke\trunk\Sql\Procedures\PivotFacilitiesData.sql 
+PRINT 'Processing file: D:\Projects\med\EurekaStroke\trunk\Sql\Procedures\PivotFacilitiesData.sql...'  
+  
+GO  
+  
+IF  EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[PivotFacilitiesData]') AND type IN (N'P', N'PC'))
+DROP PROCEDURE [dbo].[PivotFacilitiesData]
+GO
+
+CREATE PROCEDURE [dbo].[PivotFacilitiesData]
+	@facilitiesIDs varchar(1024),
+	@maxrows int = null
+AS
+BEGIN
+DECLARE @listCol VARCHAR(max)
+DECLARE @query VARCHAR(max)
+SELECT  @listCol = STUFF(( SELECT DISTINCT
+                                '],[' + ltrim(f.Name)
+                        FROM    StrokeDataView v
+                        inner join EurekaField f on v.FieldID = f.ID
+						inner join UploadLogStrokeData ulsd on v.StrokeDataID = ulsd.StrokeDataID
+						inner join UploadLog ul on ul.ID = ulsd.UploadLogID
+                        inner join dbo.fnGetIDasTable(@facilitiesIDs, ',') AS fs ON fs.[id]=ul.FacilityID
+                        ORDER BY '],[' + ltrim(f.Name)
+                        FOR XML PATH('')
+                                    ), 1, 2, '') + ']'
+                                    
+--print @listCol
+
+IF @maxrows IS NULL
+	SET @query = 'SELECT';
+ELSE
+	SET @query = 'SELECT TOP (' + cast(@maxrows as varchar(32)) + ')';
+SET @query = @query + ' * FROM
+      (
+      SELECT ulsd.StrokeDataID as ID, 
+			v.MultiValue as FieldValue, f.Name as FieldName
+       FROM    
+				UploadLog ul
+				inner join UploadLogStrokeData ulsd on ul.ID = ulsd.UploadLogID
+				inner join StrokeDataView v on v.StrokeDataID = ulsd.StrokeDataID 
+				inner join EurekaField f on v.FieldID = f.ID
+		    where ul.FacilityID IN (' + @facilitiesIDs + ')
+        ) src
+PIVOT (Min(FieldValue) FOR FieldName
+IN ('+@listCol+')) AS pvt'
+
+--print @query
+ 
+EXECUTE (@query)
+
+END
+
+GO
+
+
+
+
+
+  
+GO  
+ 
+--D:\Projects\med\EurekaStroke\trunk\Sql\Procedures\PivotFacilityData.sql 
+PRINT 'Processing file: D:\Projects\med\EurekaStroke\trunk\Sql\Procedures\PivotFacilityData.sql...'  
+  
+GO  
+  
+IF  EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[PivotFacilityData]') AND type IN (N'P', N'PC'))
+DROP PROCEDURE [dbo].[PivotFacilityData]
+GO
+
+CREATE PROCEDURE [dbo].[PivotFacilityData]
+	@facilityID int
+AS
+BEGIN
+
+DECLARE @listCol VARCHAR(max)
+DECLARE @query VARCHAR(max)
+SELECT  @listCol = STUFF(( SELECT DISTINCT
+                                '],[' + ltrim(f.Name)
+                        FROM    StrokeDataView v
+                        inner join EurekaField f on v.FieldID = f.ID
+						inner join UploadLogStrokeData ulsd on v.StrokeDataID = ulsd.StrokeDataID
+						inner join UploadLog ul on ul.ID = ulsd.UploadLogID
+						WHERE
+							ul.FacilityID = @facilityID
+							or @facilityID is null or @facilityID = 0
+                        ORDER BY '],[' + ltrim(f.Name)
+                        FOR XML PATH('')
+                                    ), 1, 2, '') + ']'
+                                    
+--print @listCol
+ 
+SET @query =
+'SELECT * FROM
+      (
+      SELECT ulsd.StrokeDataID as ID, 
+			v.MultiValue as FieldValue, f.Name as FieldName
+       FROM    
+				UploadLog ul
+				inner join UploadLogStrokeData ulsd on ul.ID = ulsd.UploadLogID
+				inner join StrokeDataView v on v.StrokeDataID = ulsd.StrokeDataID 
+				inner join EurekaField f on v.FieldID = f.ID
+		    where ul.FacilityID = ' + cast(@facilityID as varchar(64)) + '
+        ) src
+PIVOT (Min(FieldValue) FOR FieldName
+IN ('+@listCol+')) AS pvt'
+
+--print @query
+ 
+EXECUTE (@query)
+
+END
+
+GO
+
+
+
+
+
+  
+GO  
+ 
+--D:\Projects\med\EurekaStroke\trunk\Sql\Procedures\PivotReportData.sql 
+PRINT 'Processing file: D:\Projects\med\EurekaStroke\trunk\Sql\Procedures\PivotReportData.sql...'  
+  
+GO  
+  
+IF  EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[GetPivotReportData]') AND type IN (N'P', N'PC'))
+DROP PROCEDURE [dbo].[GetPivotReportData]
+GO
+
+CREATE PROCEDURE [dbo].[GetPivotReportData]
+	@userID int,
+	@reportingSource varchar(128),
+	@maxrows int = null
+AS
+BEGIN
+DECLARE @listCol VARCHAR(max)
+DECLARE @query VARCHAR(max)
+
+IF @reportingSource <> ''
+BEGIN
+	IF NOT EXISTS(SELECT * FROM UserReportingSource WHERE UserID=@userID AND ReportingSource=@reportingSource)
+		RETURN;
+	SELECT  @listCol = STUFF(( SELECT DISTINCT
+                                '],[' + ltrim(f.Name)
+                        FROM    StrokeDataView v
+                        inner join EurekaField f on v.FieldID = f.ID
+						inner join StrokeData sd on v.StrokeDataID = sd.ID AND sd.ReportingSource=@reportingSource
+                        ORDER BY '],[' + ltrim(f.Name)
+                        FOR XML PATH('')
+                                    ), 1, 2, '') + ']'
+END ELSE BEGIN
+	SELECT  @listCol = STUFF(( SELECT DISTINCT
+                                '],[' + t.Name
+                        FROM (        
+							SELECT ltrim(f.Name) as Name
+		                    FROM    StrokeDataView v
+			                inner join EurekaField f on v.FieldID = f.ID
+				            inner join StrokeData sd on v.StrokeDataID = sd.ID
+				            inner join UserReportingSource AS urs ON urs.ReportingSource=sd.ReportingSource AND urs.UserID=@userID
+							UNION
+							SELECT ltrim(f.Name) as Name
+		                    FROM    StrokeDataView v
+			                inner join EurekaField f on v.FieldID = f.ID
+							inner join UploadLogStrokeData ulsd on v.StrokeDataID = ulsd.StrokeDataID
+							inner join UploadLog ul on ul.ID = ulsd.UploadLogID
+							inner join UserFacility AS ufs ON ufs.FacilityID=ul.FacilityID AND ufs.UserID=@userID
+                        ) t
+                        ORDER BY '],[' + t.Name
+                        FOR XML PATH('')
+                                    ), 1, 2, '') + ']'
+END
+
+--print @listCol
+
+IF @maxrows IS NULL
+	SET @query = 'SELECT';
+ELSE
+	SET @query = 'SELECT TOP (' + cast(@maxrows as varchar(32)) + ')';
+
+IF @reportingSource <> ''
+	SET @query = @query + ' * FROM
+		  (
+		  SELECT v.StrokeDataID as ID,
+				v.MultiValue as FieldValue, f.Name as FieldName
+		   FROM
+					StrokeDataView v
+					inner join EurekaField f on v.FieldID = f.ID
+					inner join StrokeData sd on v.StrokeDataID = sd.ID AND sd.ReportingSource=' + @reportingSource + '
+			) src
+	PIVOT (Min(FieldValue) FOR FieldName
+	IN ('+@listCol+')) AS pvt'
+ELSE
+	SET @query = @query + ' * FROM
+		  (
+		  SELECT v.StrokeDataID as ID, 
+				v.MultiValue as FieldValue, f.Name as FieldName
+		   FROM    
+					StrokeDataView v
+					inner join EurekaField f on v.FieldID = f.ID
+					inner join (
+						SELECT sd.ID AS StrokeDataID
+						FROM StrokeData sd 
+							inner join UserReportingSource AS urs ON urs.ReportingSource=sd.ReportingSource AND urs.UserID=' + cast(@userID as varchar(32)) + '
+						UNION
+						SELECT sd.ID AS StrokeDataID
+						FROM UploadLog ul
+							inner join UploadLogStrokeData ulsd on ul.ID = ulsd.UploadLogID
+							inner join StrokeData sd on ulsd.StrokeDataID = sd.ID
+							inner join UserFacility AS ufs ON ufs.FacilityID=ul.FacilityID AND ufs.UserID=' + cast(@userID as varchar(32)) + '
+					) t ON t.StrokeDataID=v.StrokeDataID
+					
+			) src
+	PIVOT (Min(FieldValue) FOR FieldName
+	IN ('+@listCol+')) AS pvt'
+
+--print @query
+
+EXECUTE (@query)
+
+END
+
+GO
+  
+GO  
+ 
+--D:\Projects\med\EurekaStroke\trunk\Sql\Procedures\StrokeDataView.sql 
+PRINT 'Processing file: D:\Projects\med\EurekaStroke\trunk\Sql\Procedures\StrokeDataView.sql...'  
+  
+GO  
+  
+/****** Object:  View [dbo].[StrokeDataView]    Script Date: 04/22/2010 00:59:51 ******/
+IF  EXISTS (SELECT * FROM sys.views WHERE object_id = OBJECT_ID(N'[dbo].[StrokeDataView]'))
+	DROP VIEW [dbo].[StrokeDataView]
+GO
+
+
+/****** Object:  View [dbo].[StrokeDataView]    Script Date: 04/22/2010 00:59:51 ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+	CREATE VIEW [dbo].[StrokeDataView]
+	AS
+	SELECT     StrokeDataID, FieldID, 
+	STUFF((SELECT     ':' + v1.StringValue AS [text()]
+        FROM         StrokeFieldValue v1
+        WHERE     v1.StrokeDataID = v2.StrokeDataID AND v1.FieldID = v2.FieldID 
+	AND v1.[Status] = 0
+        ORDER BY v1.StringValue FOR xml PATH('')), 1, 1, '') AS MultiValue
+	FROM         StrokeFieldValue v2
+	GROUP BY StrokeDataID, FieldID
+
+GO
+  
+GO  
+ 
+--D:\Projects\med\EurekaStroke\trunk\Sql\Procedures\_dropObsoleteSP.sql 
+PRINT 'Processing file: D:\Projects\med\EurekaStroke\trunk\Sql\Procedures\_dropObsoleteSP.sql...'  
+  
+GO  
+  
+IF  EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[ObsoleteProcedure]') AND type in (N'P', N'PC'))
+DROP PROCEDURE [dbo].[ObsoleteProcedure]
+GO
+
+  
+GO  
+ 
+--D:\Projects\med\EurekaStroke\trunk\Sql\ContentScript\TestFormat.sql 
+PRINT 'Processing file: D:\Projects\med\EurekaStroke\trunk\Sql\ContentScript\TestFormat.sql...'  
+  
+GO  
+  
+SET XACT_ABORT ON; IF (OBJECT_ID('tempdb..#VersionGuidTmp') IS NULL) CREATE TABLE #VersionGuidTmp ([Guid] uniqueidentifier NOT NULL,[dateMarked] datetime NOT NULL,[description] varchar(255) NOT NULL,[isError] bit NOT NULL DEFAULT 0)
+GO
+-- This line should be at the beginning of each Content AutoChangesGuid script
+
+--(
+-- Select the expression below (not including leading -- ) and execute by press F5. Copy result Guid from Messages windows and 
+-- paste it to initialize @versionGuid and @dateMarked of your block. Don't forget change @description
+-- PRINT '''' + CAST(NEWID() as varchar(36)) + '''' + CAST(0x0D0A as varchar(2)) + '''' + CONVERT(varchar(20), GETDATE(), 113) + ''''
+
+DECLARE @ret int;
+EXEC @ret = sysVersionGuidPrepare @versionGuid = '126D7AAD-590B-4E7E-B529-29090D04BE40',
+                                  @dateMarked  = '23 Jan 2010 14:56:30',
+                                  @description = '[CONTENT]  alexa: added EurekaTest Format';
+GO
+DECLARE @ret int, @options int, @oldNoCountValue bit; 
+BEGIN TRANSACTION;
+EXEC @ret = sysVersionGuidLog; 
+IF (@ret = -1) 	BEGIN ROLLBACK TRANSACTION; SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;	DELETE #VersionGuidTmp; IF @oldNoCountValue = 0 SET NOCOUNT OFF;	END
+ELSE BEGIN
+-------------------------------------------------------------------------------------------
+INSERT INTO Format ([Name], IsNative) VALUES ('EurekaTest', 1);
+DECLARE @formatID AS int;
+--SELECT TOP 1 @formatID = ID FROM Format WHERE [Name] = 'EurekaTest';
+-------------------------------------------------------------------------------------------
+	EXEC sysVersionGuidCommit;
+	COMMIT TRANSACTION;
+END
+GO
+--) '126D7AAD-590B-4E7E-B529-29090D04BE40'
+
+
+--(
+-- Select the expression below (not including leading -- ) and execute by press F5. Copy result Guid from Messages windows and 
+-- paste it to initialize @versionGuid and @dateMarked of your block. Don't forget change @description
+-- PRINT '''' + CAST(NEWID() as varchar(36)) + '''' + CAST(0x0D0A as varchar(2)) + '''' + CONVERT(varchar(20), GETDATE(), 113) + ''''
+
+DECLARE @ret int;
+EXEC @ret = sysVersionGuidPrepare @versionGuid = '61016A0B-25C4-49BD-B041-7B38695B8726',
+                                  @dateMarked  = '23 Jan 2010 16:28:00',
+                                  @description = '[CONTENT]  alexa: added test facility for EurekaTest Format';
+GO
+DECLARE @ret int, @options int, @oldNoCountValue bit; 
+BEGIN TRANSACTION;
+EXEC @ret = sysVersionGuidLog; 
+IF (@ret = -1) 	BEGIN ROLLBACK TRANSACTION; SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;	DELETE #VersionGuidTmp; IF @oldNoCountValue = 0 SET NOCOUNT OFF;	END
+ELSE BEGIN
+-------------------------------------------------------------------------------------------
+DECLARE @formatID AS int;
+SELECT TOP 1 @formatID = ID FROM Format WHERE [Name] = 'EurekaTest';
+INSERT INTO Facility (FormatID, [Name]) VALUES (@formatID, 'EurekaTest');
+-------------------------------------------------------------------------------------------
+	EXEC sysVersionGuidCommit;
+	COMMIT TRANSACTION;
+END
+GO
+--) '61016A0B-25C4-49BD-B041-7B38695B8726'
+
+
+
+--(
+-- Select the expression below (not including leading -- ) and execute by press F5. Copy result Guid from Messages windows and 
+-- paste it to initialize @versionGuid and @dateMarked of your block. Don't forget change @description
+-- PRINT '''' + CAST(NEWID() as varchar(36)) + '''' + CAST(0x0D0A as varchar(2)) + '''' + CONVERT(varchar(20), GETDATE(), 113) + ''''
+
+DECLARE @ret int;
+EXEC @ret = sysVersionGuidPrepare @versionGuid = 'F90D0258-7A9C-4C50-8800-0D5965E80AC3',
+                                  @dateMarked  = '23 Jan 2010 21:18:47',
+                                  @description = '[CONTENT]  alexl: added Outcome format and facility';
+GO
+DECLARE @ret int, @options int, @oldNoCountValue bit; 
+BEGIN TRANSACTION;
+EXEC @ret = sysVersionGuidLog; 
+IF (@ret = -1) 	BEGIN ROLLBACK TRANSACTION; SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;	DELETE #VersionGuidTmp; IF @oldNoCountValue = 0 SET NOCOUNT OFF;	END
+ELSE BEGIN
+-------------------------------------------------------------------------------------------
+INSERT INTO [dbo].[Format] ([Name], [IsNative])
+VALUES (N'Outcome', 0);
+
+declare @formatID int
+
+select top 1 @formatID = ID from [Format] where IsNative = 0
+
+INSERT INTO [dbo].[Facility] ([Name], [FormatID])
+VALUES (N'Outcome Facility', @formatID)
+-------------------------------------------------------------------------------------------
+	EXEC sysVersionGuidCommit;
+	COMMIT TRANSACTION;
+END
+GO
+--) '61016A0B-25C4-49BD-B041-7B38695B8746'
+
+
+--(
+-- Select the expression below (not including leading -- ) and execute by press F5. Copy result Guid from Messages windows and 
+-- paste it to initialize @versionGuid and @dateMarked of your block. Don't forget change @description
+-- PRINT '''' + CAST(NEWID() as varchar(36)) + '''' + CAST(0x0D0A as varchar(2)) + '''' + CONVERT(varchar(20), GETDATE(), 113) + ''''
+
+DECLARE @ret int;
+EXEC @ret = sysVersionGuidPrepare @versionGuid = '59507CDE-C8D6-4F86-94DC-4FE153310125',
+                                  @dateMarked  = '29 Jan 2010 20:34:19',
+                                  @description = 'alexl: Format key fields (2)';
+GO
+DECLARE @ret int, @options int, @oldNoCountValue bit; 
+BEGIN TRANSACTION;
+EXEC @ret = sysVersionGuidLog; 
+IF (@ret = -1) 	BEGIN ROLLBACK TRANSACTION; SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;	DELETE #VersionGuidTmp; IF @oldNoCountValue = 0 SET NOCOUNT OFF;	END
+ELSE BEGIN
+------------------------------------------------------------------------------------------------------------------------------------
+
+update [dbo].[Format] set [KeyFields] = 'patient_os_id,jc_admitdate' where ID = 2
+update [dbo].[Format] set [KeyFields] = 'PatientID,AdmissionDate' where ID = 1
+
+-------------------------------------------------------------------------------------------------------------------------------------
+	EXEC sysVersionGuidCommit;
+	COMMIT TRANSACTION;
+END
+GO
+--) '59507CDE-C8D6-4F86-94DC-4FE153310125'
+
+
+--(
+-- Select the expression below (not including leading -- ) and execute by press F5. Copy result Guid from Messages windows and 
+-- paste it to initialize @versionGuid and @dateMarked of your block. Don't forget change @description
+-- PRINT '''' + CAST(NEWID() as varchar(36)) + '''' + CAST(0x0D0A as varchar(2)) + '''' + CONVERT(varchar(20), GETDATE(), 113) + ''''
+
+DECLARE @ret int;
+EXEC @ret = sysVersionGuidPrepare @versionGuid = '59507CDE-C8D6-4F86-94DC-4FE153310127',
+                                  @dateMarked  = '10 Feb 2010 20:34:19',
+                                  @description = 'alexl: fully populate Outcome and eureka dictionary';
+GO
+DECLARE @ret int, @options int, @oldNoCountValue bit; 
+BEGIN TRANSACTION;
+EXEC @ret = sysVersionGuidLog; 
+IF (@ret = -1) 	BEGIN ROLLBACK TRANSACTION; SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;	DELETE #VersionGuidTmp; IF @oldNoCountValue = 0 SET NOCOUNT OFF;	END
+ELSE BEGIN
+------------------------------------------------------------------------------------------------------------------------------------
+
+SET IDENTITY_INSERT [dbo].[EurekaField] ON
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (1, N'GS.Scr', 1, 3, N'Serum Creatinine', 1, NULL, NULL, CAST(0x00009D49015C626D AS DateTime), CAST(0x00009D49015C626D AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (2, N'GS.Bloodglucose.Nd', 1, 2, N'Blood Glucose ND', 1, NULL, NULL, CAST(0x00009D49015C625B AS DateTime), CAST(0x00009D49015C625B AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (3, N'GS.Scr.Nd', 1, 2, N'Serum Creatinine ND', 1, NULL, NULL, CAST(0x00009D49015C627D AS DateTime), CAST(0x00009D49015C627D AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (4, N'GS.Inr.Nd', 1, 2, N'INR ND', 1, NULL, NULL, CAST(0x00009D49015C629F AS DateTime), CAST(0x00009D49015C629F AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (5, N'GS.Inr', 1, 3, N'INR', 1, NULL, NULL, CAST(0x00009D49015C628E AS DateTime), CAST(0x00009D49015C628E AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (6, N'GS.Lipidsnd', 1, 2, N'Lipids: ND', 1, NULL, NULL, CAST(0x00009D49015C6219 AS DateTime), CAST(0x00009D49015C6219 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (7, N'GS.Ldl', 1, 1, N'LDL', 1, NULL, NULL, CAST(0x00009D49015C6208 AS DateTime), CAST(0x00009D49015C6208 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (8, N'A1C', 1, 3, N'A1C', 1, NULL, NULL, CAST(0x00009D49015C622A AS DateTime), CAST(0x00009D49015C622A AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (9, N'GS.Fastingblood', 1, 3, N'Blood Glucose ', 1, NULL, NULL, CAST(0x00009D49015C624B AS DateTime), CAST(0x00009D49015C624B AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (10, N'GS.Hba1cnd', 1, 2, N'A1C: ND', 1, NULL, NULL, CAST(0x00009D49015C623A AS DateTime), CAST(0x00009D49015C623A AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (11, N'GS.Hr', 1, 3, N'Vital Signs - Heart Rate', 1, NULL, NULL, CAST(0x00009D49015C62B0 AS DateTime), CAST(0x00009D49015C62B0 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (12, N'GS.Weight', 1, 3, N'Weight', 1, NULL, NULL, CAST(0x00009D49015C6324 AS DateTime), CAST(0x00009D49015C6324 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (13, N'GS.Heightnd', 1, 2, N'Height: ND', 1, NULL, NULL, CAST(0x00009D49015C6313 AS DateTime), CAST(0x00009D49015C6313 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (14, N'GS.Weightunit', 1, 0, N'Weight unit', 1, NULL, NULL, CAST(0x00009D49015C6335 AS DateTime), CAST(0x00009D49015C6335 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (15, N'GS.Waist', 1, 3, N'Waist Circumference', 1, NULL, NULL, CAST(0x00009D49015C6356 AS DateTime), CAST(0x00009D49015C6356 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (16, N'GS.Weightnd', 1, 2, N'Weight: ND', 1, NULL, NULL, CAST(0x00009D49015C6346 AS DateTime), CAST(0x00009D49015C6346 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (17, N'GS.Diastolic', 1, 3, N'Vital Signs - Blood Pressure Diastolic', 1, NULL, NULL, CAST(0x00009D49015C62D0 AS DateTime), CAST(0x00009D49015C62D0 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (18, N'GS.Systolic', 1, 3, N'Vital Signs - Blood Pressure Systolic', 1, NULL, NULL, CAST(0x00009D49015C62BF AS DateTime), CAST(0x00009D49015C62BF AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (19, N'GS.Vital.Nd', 1, 2, N'Vital Signs: ND', 1, NULL, NULL, CAST(0x00009D49015C62E0 AS DateTime), CAST(0x00009D49015C62E0 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (20, N'GS.Heightunit', 1, 5, N'Height unit', 1, NULL, NULL, CAST(0x00009D49015C6302 AS DateTime), CAST(0x00009D49015C6302 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (21, N'GS.Height', 1, 3, N'Height', 1, NULL, NULL, CAST(0x00009D49015C62F1 AS DateTime), CAST(0x00009D49015C62F1 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (22, N'GS.Hdl', 1, 1, N'HDL', 1, NULL, NULL, CAST(0x00009D49015C61F9 AS DateTime), CAST(0x00009D49015C61F9 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (23, N'GS.Prophylaxis.2ndday', 1, 5, N'Was DVT prophylaxis initiated by the end of hospital day 2? ', 1, NULL, NULL, CAST(0x00009D49015C60FA AS DateTime), CAST(0x00009D49015C60FA AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (24, N'GS.Patientambulating', 1, 5, N'Was patient ambulating at the end of hospital day 2?', 1, NULL, NULL, CAST(0x00009D49015C60E8 AS DateTime), CAST(0x00009D49015C60E8 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (25, N'JC.Vteprophylaxis1', 1, 5, N'Low dose unfractionated heparin (LDUH)', 1, NULL, NULL, CAST(0x00009D49015C610E AS DateTime), CAST(0x00009D49015C610E AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (26, N'JC.Vteprophylaxis3', 1, 5, N'Intermittent pneumatic compression devices (IPC)', 1, NULL, NULL, CAST(0x00009D49015C612F AS DateTime), CAST(0x00009D49015C612F AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (27, N'JC.Vteprophylaxis2', 1, 5, N'Low molecular weight heparin (LMWH)', 1, NULL, NULL, CAST(0x00009D49015C611E AS DateTime), CAST(0x00009D49015C611E AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (28, N'GS.Npo', 1, 5, N'Patient NPO throughout the entire hospital stay?', 1, NULL, NULL, CAST(0x00009D49015C609F AS DateTime), CAST(0x00009D49015C609F AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (29, N'GS.Comptransf', 1, 5, N'If bleeding complications occur in patient transferred after IV t-PA:', 1, NULL, NULL, CAST(0x00009D49015C608B AS DateTime), CAST(0x00009D49015C608B AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (30, N'GS.Dysphagia', 1, 5, N'Was patient screened for dysphagia prior to any oral intake including water or medications?', 1, NULL, NULL, CAST(0x00009D49015C60B1 AS DateTime), CAST(0x00009D49015C60B1 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (31, N'GS.Pneumonia', 1, 5, N'Treatment for Hospital-Acquired Pneumonia', 1, NULL, NULL, CAST(0x00009D49015C60D6 AS DateTime), CAST(0x00009D49015C60D6 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (32, N'GS.Dysphagiaresult', 1, 5, N'If yes, Dysphagia screening results:', 1, NULL, NULL, CAST(0x00009D49015C60C4 AS DateTime), CAST(0x00009D49015C60C4 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (33, N'JC.Vteprophylaxis4', 1, 5, N'Graduated compression stockings (GCS)', 1, NULL, NULL, CAST(0x00009D49015C613F AS DateTime), CAST(0x00009D49015C613F AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (34, N'GS.Antiplateletadm', 1, 5, N'Was antithrombotic therapy administered by the end of hospital day 2?', 1, NULL, NULL, CAST(0x00009D49015C61B6 AS DateTime), CAST(0x00009D49015C61B6 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (35, N'GS.Dvtdoc', 1, 5, N'Was DVT or PE documented?', 1, NULL, NULL, CAST(0x00009D49015C61A4 AS DateTime), CAST(0x00009D49015C61A4 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (36, N'GS.Antithrom2type', 1, 6, N'If yes, (antithrombotic therapy)', 1, NULL, NULL, CAST(0x00009D49015C61C8 AS DateTime), CAST(0x00009D49015C61C8 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (37, N'GS.Triglycerides', 1, 1, N'Triglycerides', 1, NULL, NULL, CAST(0x00009D49015C61E9 AS DateTime), CAST(0x00009D49015C61E9 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (38, N'GS.Cholesterol', 1, 1, N'Total Chol', 1, NULL, NULL, CAST(0x00009D49015C61D8 AS DateTime), CAST(0x00009D49015C61D8 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (39, N'JC.Vteprophylaxis6', 1, 5, N'Warfarin', 1, NULL, NULL, CAST(0x00009D49015C6162 AS DateTime), CAST(0x00009D49015C6162 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (40, N'JC.Vteprophylaxis5', 1, 5, N'Factor Xa Inhibitor', 1, NULL, NULL, CAST(0x00009D49015C6151 AS DateTime), CAST(0x00009D49015C6151 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (41, N'JC.Vteprophylaxis8', 1, 5, N'Venous foot pumps (VFP)', 1, NULL, NULL, CAST(0x00009D49015C6173 AS DateTime), CAST(0x00009D49015C6173 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (42, N'JC.Vtedate', 1, 4, N'What date was the initial VTE prophylaxis administered?', 1, NULL, NULL, CAST(0x00009D49015C6194 AS DateTime), CAST(0x00009D49015C6194 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (43, N'JC.Vteprophylaxis7', 1, 5, N'None of the above or ND', 1, NULL, NULL, CAST(0x00009D49015C6184 AS DateTime), CAST(0x00009D49015C6184 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (44, N'JC.Otherdiagnosis16', 1, 0, N'', 1, NULL, NULL, CAST(0x00009D49015C6548 AS DateTime), CAST(0x00009D49015C6548 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (45, N'JC.Otherdiagnosis15', 1, 0, N'', 1, NULL, NULL, CAST(0x00009D49015C6539 AS DateTime), CAST(0x00009D49015C6539 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (46, N'JC.Otherdiagnosis17', 1, 0, N'', 1, NULL, NULL, CAST(0x00009D49015C6559 AS DateTime), CAST(0x00009D49015C6559 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (47, N'JC.Principalprocedurdt', 1, 0, N'ICD-9-CM Principal Procedure Date', 1, NULL, NULL, CAST(0x00009D49015C6579 AS DateTime), CAST(0x00009D49015C6579 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (48, N'JC.Principalprocedure', 1, 0, N'ICD-9-CM Principal Procedure Code', 1, NULL, NULL, CAST(0x00009D49015C6569 AS DateTime), CAST(0x00009D49015C6569 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (49, N'JC.Otherdiagnosis11', 1, 0, N'', 1, NULL, NULL, CAST(0x00009D49015C64F2 AS DateTime), CAST(0x00009D49015C64F2 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (50, N'JC.Otherdiagnosis10', 1, 0, N'', 1, NULL, NULL, CAST(0x00009D49015C64E2 AS DateTime), CAST(0x00009D49015C64E2 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (51, N'JC.Otherdiagnosis12', 1, 0, N'', 1, NULL, NULL, CAST(0x00009D49015C6502 AS DateTime), CAST(0x00009D49015C6502 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (52, N'JC.Otherdiagnosis14', 1, 0, N'', 1, NULL, NULL, CAST(0x00009D49015C6522 AS DateTime), CAST(0x00009D49015C6522 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (53, N'JC.Otherdiagnosis13', 1, 0, N'', 1, NULL, NULL, CAST(0x00009D49015C6512 AS DateTime), CAST(0x00009D49015C6512 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (54, N'JC.Princproced.Dtutd', 1, 0, N'ICD-9-CM Principal Procedure Date UTD', 1, NULL, NULL, CAST(0x00009D49015C6589 AS DateTime), CAST(0x00009D49015C6589 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (55, N'JC.Otherproceduredate2', 1, 0, N'', 1, NULL, NULL, CAST(0x00009D49015C65FB AS DateTime), CAST(0x00009D49015C65FB AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (56, N'JC.Otherproceduredate1', 1, 0, N'ICD-9-CM Other Procedure Dates', 1, NULL, NULL, CAST(0x00009D49015C65EC AS DateTime), CAST(0x00009D49015C65EC AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (57, N'JC.Otherproceduredate3', 1, 0, N'', 1, NULL, NULL, CAST(0x00009D49015C660B AS DateTime), CAST(0x00009D49015C660B AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (58, N'JC.Otherproceduredate5', 1, 0, N'', 1, NULL, NULL, CAST(0x00009D49015C662B AS DateTime), CAST(0x00009D49015C662B AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (59, N'JC.Otherproceduredate4', 1, 0, N'', 1, NULL, NULL, CAST(0x00009D49015C661B AS DateTime), CAST(0x00009D49015C661B AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (60, N'JC.Otherprocedure2', 1, 0, N'', 1, NULL, NULL, CAST(0x00009D49015C65AA AS DateTime), CAST(0x00009D49015C65AA AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (61, N'JC.Otherprocedure1', 1, 0, N'ICD-9-CM Other Procedure Codes', 1, NULL, NULL, CAST(0x00009D49015C659A AS DateTime), CAST(0x00009D49015C659A AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (62, N'JC.Otherprocedure3', 1, 0, N'', 1, NULL, NULL, CAST(0x00009D49015C65BA AS DateTime), CAST(0x00009D49015C65BB AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (63, N'JC.Otherprocedure5', 1, 0, N'', 1, NULL, NULL, CAST(0x00009D49015C65DB AS DateTime), CAST(0x00009D49015C65DB AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (64, N'JC.Otherprocedure4', 1, 0, N'', 1, NULL, NULL, CAST(0x00009D49015C65CB AS DateTime), CAST(0x00009D49015C65CB AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (65, N'JC.Otherdiagnosis9', 1, 0, N'', 1, NULL, NULL, CAST(0x00009D49015C64D2 AS DateTime), CAST(0x00009D49015C64D2 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (66, N'JC.Discstatus', 1, 5, N'Discharge Status', 1, NULL, NULL, CAST(0x00009D49015C63CD AS DateTime), CAST(0x00009D49015C63CD AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (67, N'GS.Death', 1, 5, N'In-hospital Death', 1, NULL, NULL, CAST(0x00009D49015C63BB AS DateTime), CAST(0x00009D49015C63BB AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (68, N'GS.Funcstatus', 1, 5, N'Ambulatory status at discharge?', 1, NULL, NULL, CAST(0x00009D49015C63EB AS DateTime), CAST(0x00009D49015C63EB AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (69, N'GS.Disch.Diastolic', 1, 3, N'Discharge Blood Pressure', 1, NULL, NULL, CAST(0x00009D49015C640F AS DateTime), CAST(0x00009D49015C640F AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (70, N'GS.Disch.Systolic', 1, 3, N'Discharge Blood Pressure', 1, NULL, NULL, CAST(0x00009D49015C63FF AS DateTime), CAST(0x00009D49015C63FF AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (71, N'GS.Waist.Nd', 1, 2, N'Waist Circumference: ND', 1, NULL, NULL, CAST(0x00009D49015C6379 AS DateTime), CAST(0x00009D49015C6379 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (72, N'GS.Waistunits', 1, 5, N'Waist Circumference units', 1, NULL, NULL, CAST(0x00009D49015C6368 AS DateTime), CAST(0x00009D49015C6368 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (73, N'GS.Bmi', 1, 3, N'BMI', 1, NULL, NULL, CAST(0x00009D49015C6389 AS DateTime), CAST(0x00009D49015C6389 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (74, N'GS.Discdatetime', 1, 4, N'Discharge Date', 1, NULL, NULL, CAST(0x00009D49015C63AB AS DateTime), CAST(0x00009D49015C63AB AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (75, N'GS.Bmind', 1, 2, N'BMI: ND', 1, NULL, NULL, CAST(0x00009D49015C639A AS DateTime), CAST(0x00009D49015C639A AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (76, N'GS.Disch.Bpnd', 1, 2, N'Discharge BP: ND', 1, NULL, NULL, CAST(0x00009D49015C641F AS DateTime), CAST(0x00009D49015C641F AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (77, N'JC.Otherdiagnosis5', 1, 0, N'', 1, NULL, NULL, CAST(0x00009D49015C6492 AS DateTime), CAST(0x00009D49015C6492 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (78, N'JC.Otherdiagnosis4', 1, 0, N'', 1, NULL, NULL, CAST(0x00009D49015C6482 AS DateTime), CAST(0x00009D49015C6482 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (79, N'JC.Otherdiagnosis6', 1, 0, N'', 1, NULL, NULL, CAST(0x00009D49015C64A2 AS DateTime), CAST(0x00009D49015C64A2 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (80, N'JC.Otherdiagnosis8', 1, 0, N'', 1, NULL, NULL, CAST(0x00009D49015C64C2 AS DateTime), CAST(0x00009D49015C64C2 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (81, N'JC.Otherdiagnosis7', 1, 0, N'', 1, NULL, NULL, CAST(0x00009D49015C64B2 AS DateTime), CAST(0x00009D49015C64B2 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (82, N'JC.Otherdiagnosis', 1, 0, N'ICD-9-CM Other Diagnosis Codes', 1, NULL, NULL, CAST(0x00009D49015C6442 AS DateTime), CAST(0x00009D49015C6442 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (83, N'JC.Principaldiagnosis', 1, 0, N'ICD-9-CM Principal Diagnosis Code', 1, NULL, NULL, CAST(0x00009D49015C6432 AS DateTime), CAST(0x00009D49015C6432 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (84, N'JC.Otherdiagnosis1', 1, 0, N'', 1, NULL, NULL, CAST(0x00009D49015C6452 AS DateTime), CAST(0x00009D49015C6452 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (85, N'JC.Otherdiagnosis3', 1, 0, N'', 1, NULL, NULL, CAST(0x00009D49015C6472 AS DateTime), CAST(0x00009D49015C6472 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (86, N'JC.Otherdiagnosis2', 1, 0, N'', 1, NULL, NULL, CAST(0x00009D49015C6462 AS DateTime), CAST(0x00009D49015C6462 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (87, N'GS.Comp.Throm.Ther', 1, 6, N'Complications of Thrombolytic Therapy', 1, NULL, NULL, CAST(0x00009D49015C6078 AS DateTime), CAST(0x00009D49015C6078 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (88, N'GS.Symptresolve', 1, 5, N'Had stroke symptoms resolved at time of presentation?', 1, NULL, NULL, CAST(0x00009D49015C5CD0 AS DateTime), CAST(0x00009D49015C5CD0 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (89, N'GS.Initexam', 1, 6, N'Initial exam findings', 1, NULL, NULL, CAST(0x00009D49015C5CC3 AS DateTime), CAST(0x00009D49015C5CC3 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (90, N'GS.Nihssperformed', 1, 5, N'Initial NIH Stroke scale', 1, NULL, NULL, CAST(0x00009D49015C5CDE AS DateTime), CAST(0x00009D49015C5CDE AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (91, N'GS.Nihssadmit', 1, 1, N'Total Score', 1, NULL, NULL, CAST(0x00009D49015C5CFA AS DateTime), CAST(0x00009D49015C5CFA AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (92, N'GS.Nihssproretro', 1, 5, N'If Yes:', 1, NULL, NULL, CAST(0x00009D49015C5CEC AS DateTime), CAST(0x00009D49015C5CEC AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (93, N'GS.Nomedhx', 1, 2, N'No Medical History', 1, NULL, NULL, CAST(0x00009D49015C5C87 AS DateTime), CAST(0x00009D49015C5C87 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (94, N'GS.Med.Hist', 1, 6, N'Previously known medical hx of:', 1, NULL, NULL, CAST(0x00009D49015C5C72 AS DateTime), CAST(0x00009D49015C5C72 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (95, N'GS.Ambulatprior', 1, 5, N'Ambulatory status prior to the current event?', 1, NULL, NULL, CAST(0x00009D49015C5C95 AS DateTime), CAST(0x00009D49015C5C95 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (96, N'GS.Tiaduration', 1, 5, N'Symptom Duration if  diagnosis of Transient Ischemic Attack (less than 24 hours)', 1, NULL, NULL, CAST(0x00009D49015C5CB5 AS DateTime), CAST(0x00009D49015C5CB5 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (97, N'StrokeType', 1, 5, N'Final clinical diagnosis related to stroke:', 1, NULL, NULL, CAST(0x00009D49015C5CA4 AS DateTime), CAST(0x00009D49015C5CA4 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (98, N'GS.Nihss1a', 1, 5, N'1.a. Level of consciousness', 1, NULL, NULL, CAST(0x00009D49015C5D06 AS DateTime), CAST(0x00009D49015C5D06 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (99, N'GS.Nihss5r', 1, 5, N'5r. Motor function – right arm:', 1, NULL, NULL, CAST(0x00009D49015C5D6D AS DateTime), CAST(0x00009D49015C5D6D AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (100, N'GS.Nihss5l', 1, 5, N'5l. Motor function – left arm', 1, NULL, NULL, CAST(0x00009D49015C5D5D AS DateTime), CAST(0x00009D49015C5D5D AS DateTime))
+
+print 'Processed 100 total records'
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (101, N'GS.Nihss6l', 1, 5, N'6l. Motor function – left leg:', 1, NULL, NULL, CAST(0x00009D49015C5D7C AS DateTime), CAST(0x00009D49015C5D7C AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (102, N'GS.Nihss7', 1, 5, N'7. Limb ataxia:', 1, NULL, NULL, CAST(0x00009D49015C5D9C AS DateTime), CAST(0x00009D49015C5D9C AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (103, N'GS.Nihss6r', 1, 5, N'6r. Motor function – right leg:', 1, NULL, NULL, CAST(0x00009D49015C5D8C AS DateTime), CAST(0x00009D49015C5D8C AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (104, N'GS.Nihss1c', 1, 5, N'1.c. Ask patient to open and close eyes; make fist and let go:', 1, NULL, NULL, CAST(0x00009D49015C5D23 AS DateTime), CAST(0x00009D49015C5D23 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (105, N'GS.Nihss1b', 1, 5, N'1.b. Ask patient the month and their age:', 1, NULL, NULL, CAST(0x00009D49015C5D14 AS DateTime), CAST(0x00009D49015C5D14 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (106, N'GS.Nihss2', 1, 5, N'2. Best gaze (only horizontal eye movement):', 1, NULL, NULL, CAST(0x00009D49015C5D31 AS DateTime), CAST(0x00009D49015C5D31 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (107, N'GS.Nihss4', 1, 5, N'4. Facial paresis (Ask patient to show teeth or raise eyebrows and close eyes tightly):', 1, NULL, NULL, CAST(0x00009D49015C5D4D AS DateTime), CAST(0x00009D49015C5D4D AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (108, N'GS.Nihss3', 1, 5, N'3. Visual field testing', 1, NULL, NULL, CAST(0x00009D49015C5D40 AS DateTime), CAST(0x00009D49015C5D40 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (109, N'GS.Insurance', 1, 6, N'Health insurance status ', 1, NULL, NULL, CAST(0x00009D49015C5C63 AS DateTime), CAST(0x00009D49015C5C63 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (110, N'JC.Edpatient', 1, 5, N'Was the patient an ED patient at the facility?', 1, NULL, NULL, CAST(0x00009D49015C5B99 AS DateTime), CAST(0x00009D49015C5B99 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (111, N'GS.Patientarrival', 1, 5, N'How patient arrived at your hospital', 1, NULL, NULL, CAST(0x00009D49015C5B8A AS DateTime), CAST(0x00009D49015C5B8A AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (112, N'GS.Placercd', 1, 5, N'Where patient first received care at your hospital', 1, NULL, NULL, CAST(0x00009D49015C5BA6 AS DateTime), CAST(0x00009D49015C5BA6 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (113, N'JC.Arrdatetime', 1, 4, N'Arrival Date/Time', 1, NULL, NULL, CAST(0x00009D49015C5BC3 AS DateTime), CAST(0x00009D49015C5BC3 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (114, N'GS.Prehosp.Ems', 1, 5, N'Advanced notification by EMS?', 1, NULL, NULL, CAST(0x00009D49015C5BB6 AS DateTime), CAST(0x00009D49015C5BB6 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (115, N'JC.Clinical', 1, 5, N'During this hospital stay, was the patient enrolled in a clinical trial in which patients with the same condition as the measure set were being studied (i.e. AMI, CAC, HF, PN, PR, SCIP, STK,VTE)?', 1, NULL, NULL, CAST(0x00009D49015C4A6C AS DateTime), CAST(0x00009D49015C4A6C AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (116, N'PatientID', 1, 0, N'Patient ID', 1, NULL, NULL, CAST(0x00009D49015C4A5E AS DateTime), CAST(0x00009D49015C4A5E AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (117, N'JC.Carotid ', 1, 5, N'Was this patient admitted for the sole purpose of performance of elective carotid intervention?', 1, NULL, NULL, CAST(0x00009D49015C5B42 AS DateTime), CAST(0x00009D49015C5B42 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (118, N'GS.SymptomLocation', 1, 5, N'Patient location when stroke symptoms discovered ', 1, NULL, NULL, CAST(0x00009D49015C5B78 AS DateTime), CAST(0x00009D49015C5B78 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (119, N'GS.Jp.Admitsource', 1, 5, N'Point of Origin for Admission or Visit', 1, NULL, NULL, CAST(0x00009D49015C5B5E AS DateTime), CAST(0x00009D49015C5B5E AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (120, N'JC.Arrdatetime.Precision', 1, 5, N'Arrival Date Precision', 1, NULL, NULL, CAST(0x00009D49015C5BCF AS DateTime), CAST(0x00009D49015C5BCF AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (121, N'Gender', 1, 5, N'Gender', 1, NULL, NULL, CAST(0x00009D49015C5C2A AS DateTime), CAST(0x00009D49015C5C2B AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (122, N'Age', 1, 1, N'Age', 1, NULL, NULL, CAST(0x00009D49015C5C1F AS DateTime), CAST(0x00009D49015C5C1F AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (123, N'SP.Ethnic', 1, 5, N'Hispanic Ethnicity', 1, NULL, NULL, CAST(0x00009D49015C5C38 AS DateTime), CAST(0x00009D49015C5C38 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (124, N'GS.Otherrace', 1, 0, N'Specify Other Race', 1, NULL, NULL, CAST(0x00009D49015C5C56 AS DateTime), CAST(0x00009D49015C5C56 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (125, N'Race', 1, 6, N'Race', 1, NULL, NULL, CAST(0x00009D49015C5C45 AS DateTime), CAST(0x00009D49015C5C45 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (126, N'GS.Notadmit', 1, 5, N'Transferred from your ED to another acute care hospital?', 1, NULL, NULL, CAST(0x00009D49015C5BE9 AS DateTime), CAST(0x00009D49015C5BE9 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (127, N'AdmissionDate', 1, 4, N'Admit Date', 1, NULL, NULL, CAST(0x00009D49015C5BDC AS DateTime), CAST(0x00009D49015C5BDC AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (128, N'GS.Careunit', 1, 6, N'Where was the patient cared for and by whom?', 1, NULL, NULL, CAST(0x00009D49015C5BF6 AS DateTime), CAST(0x00009D49015C5BF6 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (129, N'DateOfBirth', 1, 4, N'Birth Date', 1, NULL, NULL, CAST(0x00009D49015C5C13 AS DateTime), CAST(0x00009D49015C5C13 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (130, N'JC.Providernpi', 1, 0, N'Physician/Provider NPI', 1, NULL, NULL, CAST(0x00009D49015C5C07 AS DateTime), CAST(0x00009D49015C5C07 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (131, N'GS.Noivwarning2', 1, 6, N'Warnings (3-4.5 hr)', 1, NULL, NULL, CAST(0x00009D49015C5F60 AS DateTime), CAST(0x00009D49015C5F60 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (132, N'GS.Noivcontra2', 1, 6, N'Contraindications (3-4.5 hr)', 1, NULL, NULL, CAST(0x00009D49015C5F49 AS DateTime), CAST(0x00009D49015C5F49 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (133, N'GS.AddwarninGS', 1, 6, N'Additional Warnings for patients treated between 3-4.5 hrs', 1, NULL, NULL, CAST(0x00009D49015C5F76 AS DateTime), CAST(0x00009D49015C5F76 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (134, N'GS.Noivhosp2', 1, 6, N'Hospital-Related or Other Factors (3-4.5 hr)', 1, NULL, NULL, CAST(0x00009D49015C5F9D AS DateTime), CAST(0x00009D49015C5F9D AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (135, N'GS.Noivhosp', 1, 6, N'Hospital-Related or Other Factors (0-3 hr)', 1, NULL, NULL, CAST(0x00009D49015C5F88 AS DateTime), CAST(0x00009D49015C5F89 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (136, N'GS.Ivtpanc', 1, 5, N'Documented Contraindications or Warnings for not initiating IV thrombolytic in the 0-3hr treatment window?', 1, NULL, NULL, CAST(0x00009D49015C5EFB AS DateTime), CAST(0x00009D49015C5EFB AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (137, N'JC.Ivthrodttm.Precision', 1, 5, N'IV tPA Precision', 1, NULL, NULL, CAST(0x00009D49015C5EEA AS DateTime), CAST(0x00009D49015C5EEA AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (138, N'GS.Ivtpalatenc', 1, 5, N'Documented Contraindications or Warnings for not initiating IV thrombolytic in the 3-4.5hr treatment window?   ', 1, NULL, NULL, CAST(0x00009D49015C5F0C AS DateTime), CAST(0x00009D49015C5F0C AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (139, N'GS.Noivwarning', 1, 6, N'Warnings (0-3 hr)', 1, NULL, NULL, CAST(0x00009D49015C5F33 AS DateTime), CAST(0x00009D49015C5F33 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (140, N'GS.Noivcontra', 1, 6, N'Contraindications (0-3 hr)', 1, NULL, NULL, CAST(0x00009D49015C5F1E AS DateTime), CAST(0x00009D49015C5F1E AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (141, N'GS.Noivthromoth', 1, 0, N'Specify Other Reason for no IV t-PA (0-3hr)', 1, NULL, NULL, CAST(0x00009D49015C5FAF AS DateTime), CAST(0x00009D49015C5FAF AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (142, N'GS.Thromexp', 1, 5, N'Investigational or experimental protocol for thrombolysis?', 1, NULL, NULL, CAST(0x00009D49015C6031 AS DateTime), CAST(0x00009D49015C6031 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (143, N'GS.Iatpaoutside', 1, 5, N'IA catheter-based reperfusion at outside hospital?', 1, NULL, NULL, CAST(0x00009D49015C6020 AS DateTime), CAST(0x00009D49015C6020 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (144, N'GS.Thromexptype', 1, 0, N'If yes, Specify', 1, NULL, NULL, CAST(0x00009D49015C6044 AS DateTime), CAST(0x00009D49015C6044 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (145, N'GS.Comfortonly', 1, 5, N'When is the earliest documentation of comfort measures only?', 1, NULL, NULL, CAST(0x00009D49015C6065 AS DateTime), CAST(0x00009D49015C6065 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (146, N'GS.Nothromcomment', 1, 0, N'Additional Comments', 1, NULL, NULL, CAST(0x00009D49015C6055 AS DateTime), CAST(0x00009D49015C6055 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (147, N'GS.Ivtpaoutside', 1, 5, N'IV t-PA at an outside hospital?', 1, NULL, NULL, CAST(0x00009D49015C5FD0 AS DateTime), CAST(0x00009D49015C5FD0 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (148, N'GS.Noivthromoth2', 1, 0, N'Specify Other Reason for no IV t-PA (3-4.5hr)', 1, NULL, NULL, CAST(0x00009D49015C5FC0 AS DateTime), CAST(0x00009D49015C5FC0 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (149, N'GS.Iatpa', 1, 5, N'IA catheter-based reperfusion at this hospital?', 1, NULL, NULL, CAST(0x00009D49015C5FE1 AS DateTime), CAST(0x00009D49015C5FE1 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (150, N'GS.iatpadatetime.Precision', 1, 5, N'IA tPA Date/Time Precision', 1, NULL, NULL, CAST(0x00009D49015C600C AS DateTime), CAST(0x00009D49015C600C AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (151, N'GS.Iatpadatetime', 1, 4, N'Date/Time of IA catheter-based reperfusion at this hospital', 1, NULL, NULL, CAST(0x00009D49015C5FF2 AS DateTime), CAST(0x00009D49015C5FF2 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (152, N'JC.Ivthrodttm', 1, 4, N'Date/Time IV tPA initiated', 1, NULL, NULL, CAST(0x00009D49015C5ED7 AS DateTime), CAST(0x00009D49015C5ED7 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (153, N'GS.Antiplateletprior', 1, 5, N'Antiplatelet', 1, NULL, NULL, CAST(0x00009D49015C5E07 AS DateTime), CAST(0x00009D49015C5E07 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (154, N'GS.Nopriormeds', 1, 2, N'No medications prior to admission', 1, NULL, NULL, CAST(0x00009D49015C5DF9 AS DateTime), CAST(0x00009D49015C5DF9 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (155, N'GS.Anticoagprior', 1, 5, N'Anticoagulation', 1, NULL, NULL, CAST(0x00009D49015C5E14 AS DateTime), CAST(0x00009D49015C5E14 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (156, N'GS.Cholredprior', 1, 5, N'Cholesterol reducer prior to admission?', 1, NULL, NULL, CAST(0x00009D49015C5E2E AS DateTime), CAST(0x00009D49015C5E2E AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (157, N'GS.Antihyperprior', 1, 5, N'Anti-hypertensive prior to admission?', 1, NULL, NULL, CAST(0x00009D49015C5E20 AS DateTime), CAST(0x00009D49015C5E20 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (158, N'GS.Nihss9', 1, 5, N'9. Best language (describe picture, name items, read sentences):', 1, NULL, NULL, CAST(0x00009D49015C5DBA AS DateTime), CAST(0x00009D49015C5DBA AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (159, N'GS.Nihss8', 1, 5, N'8. Sensory (use pinprick to test arms, legs, trunk and face – compare side to side):', 1, NULL, NULL, CAST(0x00009D49015C5DAC AS DateTime), CAST(0x00009D49015C5DAC AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (160, N'GS.Nihss10', 1, 5, N'10. Dysarthria (read several words):', 1, NULL, NULL, CAST(0x00009D49015C5DCD AS DateTime), CAST(0x00009D49015C5DCD AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (161, N'GS.Ambulatadmit', 1, 5, N'Ambulatory status on admission', 1, NULL, NULL, CAST(0x00009D49015C5DEB AS DateTime), CAST(0x00009D49015C5DEB AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (162, N'GS.Nihss11', 1, 5, N'11. Extinction and inattention:', 1, NULL, NULL, CAST(0x00009D49015C5DDD AS DateTime), CAST(0x00009D49015C5DDD AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (163, N'GS.Dmmedprior', 1, 5, N'Diabetic medication prior to admission?', 1, NULL, NULL, CAST(0x00009D49015C5E3C AS DateTime), CAST(0x00009D49015C5E3C AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (164, N'GS.Ctcompdatetime', 1, 4, N'Date/Time Initial Brain Imaging Completed ', 1, NULL, NULL, CAST(0x00009D49015C5E99 AS DateTime), CAST(0x00009D49015C5E99 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (165, N'GS.Ctcomp', 1, 5, N'Brain Imaging Completed at your hospital?', 1, NULL, NULL, CAST(0x00009D49015C5E8C AS DateTime), CAST(0x00009D49015C5E8C AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (166, N'GS.ctcompdatetime.Precision', 1, 5, N'Brain Imaging Precision', 1, NULL, NULL, CAST(0x00009D49015C5EA5 AS DateTime), CAST(0x00009D49015C5EA5 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (167, N'JC.Ivthroinit', 1, 5, N'IV thrombolytic therapy initiated at this hospital?', 1, NULL, NULL, CAST(0x00009D49015C5EC6 AS DateTime), CAST(0x00009D49015C5EC6 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (168, N'GS.Firstimage', 1, 5, N'Interpretation of first brain image ', 1, NULL, NULL, CAST(0x00009D49015C5EB4 AS DateTime), CAST(0x00009D49015C5EB4 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (169, N'GS.Lastknownwell.Precision', 1, 5, N'Last Known Well Precision', 1, NULL, NULL, CAST(0x00009D49015C5E56 AS DateTime), CAST(0x00009D49015C5E56 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (170, N'GS.Lastknownwell', 1, 4, N'Date/Time patient last known to be well', 1, NULL, NULL, CAST(0x00009D49015C5E4A AS DateTime), CAST(0x00009D49015C5E4A AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (171, N'GS.Symptomdatetime', 1, 4, N'Date/Time of discovery of stroke or stroke-like symptoms', 1, NULL, NULL, CAST(0x00009D49015C5E64 AS DateTime), CAST(0x00009D49015C5E64 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (172, N'GS.Sameaslastknown', 1, 2, N'Time of Discovery same as Time Last Known Well:', 1, NULL, NULL, CAST(0x00009D49015C5E7F AS DateTime), CAST(0x00009D49015C5E7F AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (173, N'GS.symptomdatetime.Precision', 1, 5, N'Symptom Date/Time Precision', 1, NULL, NULL, CAST(0x00009D49015C5E70 AS DateTime), CAST(0x00009D49015C5E70 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (174, N'JC.Otherproceduredate1.Utd', 1, 0, N'ICD-9-CM Other Procedure Dates UTD', 1, NULL, NULL, CAST(0x00009D49015C663B AS DateTime), CAST(0x00009D49015C663B AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (175, N'GS.Pc.Emsgcsnd', 1, 2, N'Total GCS: ND', 1, NULL, NULL, CAST(0x00009D49015C6ECB AS DateTime), CAST(0x00009D49015C6ECB AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (176, N'GS.Pc.Emsgcsintub', 1, 2, N'Total GCS: Intubated', 1, NULL, NULL, CAST(0x00009D49015C6EBB AS DateTime), CAST(0x00009D49015C6EBB AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (177, N'GS.Uti', 1, 5, N'Was patient treated for a urinary tract infection (UTI) during this admission?', 1, NULL, NULL, CAST(0x00009D49015C6EDD AS DateTime), CAST(0x00009D49015C6EDD AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (178, N'GS.Pc.Admorder', 1, 5, N'Was a stroke admission order set used in this patient?', 1, NULL, NULL, CAST(0x00009D49015C6F04 AS DateTime), CAST(0x00009D49015C6F04 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (179, N'GS.Foley', 1, 5, N'If patient was treated for a UTI, did the patient have a Foley catheter during this admission?', 1, NULL, NULL, CAST(0x00009D49015C6EF1 AS DateTime), CAST(0x00009D49015C6EF1 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (180, N'GS.Pc.Emsgcseye', 1, 5, N'Eye', 1, NULL, NULL, CAST(0x00009D49015C6E70 AS DateTime), CAST(0x00009D49015C6E70 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (181, N'GS.Pc.Predx', 1, 6, N'Presumptive hospital admission diagnosis at the time of admission related to stroke: ', 1, NULL, NULL, CAST(0x00009D49015C6E5C AS DateTime), CAST(0x00009D49015C6E5C AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (182, N'GS.Pc.Emsgcsmot', 1, 5, N'Motor', 1, NULL, NULL, CAST(0x00009D49015C6E83 AS DateTime), CAST(0x00009D49015C6E83 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (183, N'GS.Pc.Emsgcstot', 1, 3, N'Total GCS', 1, NULL, NULL, CAST(0x00009D49015C6EA9 AS DateTime), CAST(0x00009D49015C6EA9 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (184, N'GS.Pc.Emsgcsvoic', 1, 5, N'Voice', 1, NULL, NULL, CAST(0x00009D49015C6E96 AS DateTime), CAST(0x00009D49015C6E96 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (185, N'JC.Principaldiagnosis', 1, 0, N'ICD-9-CM Principal Diagnosis Code', 1, NULL, NULL, CAST(0x00009D49015C6F15 AS DateTime), CAST(0x00009D49015C6F15 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (186, N'NJ.Hospcode', 1, 0, N'Hospital Code', 1, NULL, NULL, CAST(0x00009D49015C6F94 AS DateTime), CAST(0x00009D49015C6F94 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (187, N'NJ.Hosptype', 1, 5, N'Hospital Type', 1, NULL, NULL, CAST(0x00009D49015C6F82 AS DateTime), CAST(0x00009D49015C6F82 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (188, N'NJ.Transhospcode', 1, 0, N'Hospital Transferred From Code', 1, NULL, NULL, CAST(0x00009D49015C6FA6 AS DateTime), CAST(0x00009D49015C6FA7 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (189, N'NJ.Lastname', 1, 0, N'Last Name', 1, NULL, NULL, CAST(0x00009D49015C6FC6 AS DateTime), CAST(0x00009D49015C6FC6 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (190, N'NJ.Mrn', 1, 0, N'Medical Record #', 1, NULL, NULL, CAST(0x00009D49015C6FB6 AS DateTime), CAST(0x00009D49015C6FB6 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (191, N'GS.Pc.Dischchlst', 1, 5, N'Was a stroke discharge checklist used in this patient?', 1, NULL, NULL, CAST(0x00009D49015C6F3A AS DateTime), CAST(0x00009D49015C6F3A AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (192, N'GS.Rehabsvcs', 1, 6, N'Check all rehab services that patient received or was assessed for', 1, NULL, NULL, CAST(0x00009D49015C6F27 AS DateTime), CAST(0x00009D49015C6F27 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (193, N'NY.Brainimageread', 1, 4, N'Date/Time Brain Image Reported/Read:', 1, NULL, NULL, CAST(0x00009D49015C6F4D AS DateTime), CAST(0x00009D49015C6F4D AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (194, N'NY.Mdassessdt', 1, 4, N'Date/Time MD Assessment:', 1, NULL, NULL, CAST(0x00009D49015C6F71 AS DateTime), CAST(0x00009D49015C6F71 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (195, N'NY.Decisionmaker', 1, 4, N'Date/Time Stroke Team Arrival (treatment decision maker):', 1, NULL, NULL, CAST(0x00009D49015C6F5E AS DateTime), CAST(0x00009D49015C6F5E AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (196, N'GS.Pc.Emscalldt', 1, 4, N'Date & time call received by EMS', 1, NULL, NULL, CAST(0x00009D49015C6E4C AS DateTime), CAST(0x00009D49015C6E4C AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (197, N'GS.Jp.Ecgcpdatetime.Precision', 1, 5, N'ECG completed Precision', 1, NULL, NULL, CAST(0x00009D49015C6CE5 AS DateTime), CAST(0x00009D49015C6CE5 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (198, N'GS.Jp.Ecgcpdatetime', 1, 4, N'Date/Time ECG completed', 1, NULL, NULL, CAST(0x00009D49015C6CD4 AS DateTime), CAST(0x00009D49015C6CD4 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (199, N'GS.Jp.Ecgna', 1, 2, N'N/A', 1, NULL, NULL, CAST(0x00009D49015C6CF7 AS DateTime), CAST(0x00009D49015C6CF7 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (200, N'GS.Jp.xorderdatetime.Precision', 1, 5, N'Chest X-ray ordered Precision', 1, NULL, NULL, CAST(0x00009D49015C6D1A AS DateTime), CAST(0x00009D49015C6D1A AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (201, N'GS.Jp.Xorderdatetime', 1, 4, N'Date/Time Chest X-ray ordered', 1, NULL, NULL, CAST(0x00009D49015C6D07 AS DateTime), CAST(0x00009D49015C6D07 AS DateTime))
+
+print 'Processed 200 total records'
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (202, N'GS.Jp.Labcpdatetime.Precision', 1, 5, N'Lab Tests completed Precision', 1, NULL, NULL, CAST(0x00009D49015C6C8C AS DateTime), CAST(0x00009D49015C6C8C AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (203, N'GS.Jp.Labcpdatetime', 1, 4, N'Date/Time Lab Tests completed', 1, NULL, NULL, CAST(0x00009D49015C6C7B AS DateTime), CAST(0x00009D49015C6C7C AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (204, N'GS.Jp.Labna', 1, 2, N'N/A', 1, NULL, NULL, CAST(0x00009D49015C6C9F AS DateTime), CAST(0x00009D49015C6C9F AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (205, N'GS.Jp.Ecgorddatetime.Precision', 1, 5, N'ECG ordered Precision', 1, NULL, NULL, CAST(0x00009D49015C6CC0 AS DateTime), CAST(0x00009D49015C6CC0 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (206, N'GS.Jp.Ecgorddatetime', 1, 4, N'Date/Time ECG ordered', 1, NULL, NULL, CAST(0x00009D49015C6CB0 AS DateTime), CAST(0x00009D49015C6CB0 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (207, N'GS.Jp.Xcompdatetime', 1, 4, N'Date/Time Chest X-ray completed', 1, NULL, NULL, CAST(0x00009D49015C6D2C AS DateTime), CAST(0x00009D49015C6D2C AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (208, N'GS.Antithrombotic1dose', 1, 3, N'Dynamic dosage', 1, NULL, NULL, CAST(0x00009D49015C6DA7 AS DateTime), CAST(0x00009D49015C6DA7 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (209, N'GS.Ptcontract', 1, 5, N'Patient adherence contract/compact used?', 1, NULL, NULL, CAST(0x00009D49015C6D96 AS DateTime), CAST(0x00009D49015C6D96 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (210, N'GS.Antithrombotic2dose', 1, 3, N'Dynamic dosage', 1, NULL, NULL, CAST(0x00009D49015C6DDC AS DateTime), CAST(0x00009D49015C6DDC AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (211, N'GS.Antithrombotic4dose', 1, 3, N'Dynamic dosage', 1, NULL, NULL, CAST(0x00009D49015C6E25 AS DateTime), CAST(0x00009D49015C6E25 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (212, N'GS.Antithrombotic3dose', 1, 3, N'Dynamic dosage', 1, NULL, NULL, CAST(0x00009D49015C6E02 AS DateTime), CAST(0x00009D49015C6E02 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (213, N'GS.Jp.Xrayna', 1, 2, N'N/A', 1, NULL, NULL, CAST(0x00009D49015C6D4D AS DateTime), CAST(0x00009D49015C6D4D AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (214, N'GS.Jp.xcompdatetime.Precision', 1, 5, N'Chest X-ray completed Precision', 1, NULL, NULL, CAST(0x00009D49015C6D3C AS DateTime), CAST(0x00009D49015C6D3C AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (215, N'GS.Pmtused', 1, 5, N'PMT used concurrently or retrospectively or combination?', 1, NULL, NULL, CAST(0x00009D49015C6D60 AS DateTime), CAST(0x00009D49015C6D60 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (216, N'GS.Pc.Dischchlst', 1, 5, N'Was a stroke discharge checklist used in this patient?', 1, NULL, NULL, CAST(0x00009D49015C6D84 AS DateTime), CAST(0x00009D49015C6D84 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (217, N'GS.Pc.Admorder', 1, 5, N'Was a stroke admission order set used in this patient?', 1, NULL, NULL, CAST(0x00009D49015C6D73 AS DateTime), CAST(0x00009D49015C6D73 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (218, N'NJ.Timedelay', 1, 2, N'No In-hospital Time Delay', 1, NULL, NULL, CAST(0x00009D49015C71A6 AS DateTime), CAST(0x00009D49015C71A6 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (219, N'NJ.Faildiagnose', 1, 2, N'No Failure to diagnose in 3 hour time frame ', 1, NULL, NULL, CAST(0x00009D49015C7196 AS DateTime), CAST(0x00009D49015C7196 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (220, N'NJ.Noivaccess', 1, 2, N'IV access', 1, NULL, NULL, CAST(0x00009D49015C71B6 AS DateTime), CAST(0x00009D49015C71B6 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (221, N'NJ.Delayarrival', 1, 2, N'No Delay in patient arrival', 1, NULL, NULL, CAST(0x00009D49015C71D8 AS DateTime), CAST(0x00009D49015C71D8 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (222, N'NJ.Nootherfactor', 1, 2, N'No Other', 1, NULL, NULL, CAST(0x00009D49015C71C8 AS DateTime), CAST(0x00009D49015C71C8 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (223, N'NJ.Rapidimprove', 1, 2, N'No Rapid improvement of Stroke severity too mild', 1, NULL, NULL, CAST(0x00009D49015C7150 AS DateTime), CAST(0x00009D49015C7150 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (224, N'NJ.Refused', 1, 2, N'No Patient/Family refused', 1, NULL, NULL, CAST(0x00009D49015C7140 AS DateTime), CAST(0x00009D49015C7140 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (225, N'NJ.Toosevere', 1, 2, N'No Stroke severity - Too severe (e.g., NIHSS >22)', 1, NULL, NULL, CAST(0x00009D49015C7165 AS DateTime), CAST(0x00009D49015C7165 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (226, N'NJ.Careteam', 1, 2, N'No Care-team unable to determine eligibility', 1, NULL, NULL, CAST(0x00009D49015C7186 AS DateTime), CAST(0x00009D49015C7186 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (227, N'NJ.Advanceage', 1, 2, N'No Advanced age', 1, NULL, NULL, CAST(0x00009D49015C7175 AS DateTime), CAST(0x00009D49015C7175 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (228, N'NJ.Otherthrom', 1, 5, N'Was other thrombolytic therapy administered?', 1, NULL, NULL, CAST(0x00009D49015C71E8 AS DateTime), CAST(0x00009D49015C71E8 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (229, N'NJ.Rankin', 1, 5, N'Modified Rankin Scale at Discharge', 1, NULL, NULL, CAST(0x00009D49015C7264 AS DateTime), CAST(0x00009D49015C7264 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (230, N'NJ.2hemorrhage', 1, 5, N'Secondary symptomatic intracerebral hemorrhage?', 1, NULL, NULL, CAST(0x00009D49015C7253 AS DateTime), CAST(0x00009D49015C7253 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (231, N'NJ.Reserved1', 1, 0, N'Reserved field 1 ', 1, NULL, NULL, CAST(0x00009D49015C727A AS DateTime), CAST(0x00009D49015C727A AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (232, N'NJ.Reserved3', 1, 0, N'Reserved field 3', 1, NULL, NULL, CAST(0x00009D49015C729A AS DateTime), CAST(0x00009D49015C729A AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (233, N'NJ.Reserved2', 1, 0, N'Reserved field 2', 1, NULL, NULL, CAST(0x00009D49015C728A AS DateTime), CAST(0x00009D49015C728A AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (234, N'NJ.Heparin', 1, 5, N'IV therapeutic heparin administered?', 1, NULL, NULL, CAST(0x00009D49015C720C AS DateTime), CAST(0x00009D49015C720C AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (235, N'NJ.Othertherapy', 1, 5, N'Other investigative therapy for ischemic or hemorrhagic?', 1, NULL, NULL, CAST(0x00009D49015C71FA AS DateTime), CAST(0x00009D49015C71FA AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (236, N'NJ.Rhythm', 1, 5, N'Was the patients cardiac rhythm monitored continuously?', 1, NULL, NULL, CAST(0x00009D49015C721D AS DateTime), CAST(0x00009D49015C721D AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (237, N'GS.Foley', 1, 5, N'If patient was treated for a UTI, did the patient have a Foley catheter during this admission?', 1, NULL, NULL, CAST(0x00009D49015C7241 AS DateTime), CAST(0x00009D49015C7241 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (238, N'GS.Uti', 1, 5, N'Was patient treated for a urinary tract infection (UTI) during this admission?', 1, NULL, NULL, CAST(0x00009D49015C722F AS DateTime), CAST(0x00009D49015C722F AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (239, N'NJ.Pregnancy', 1, 2, N'No Pregnancy', 1, NULL, NULL, CAST(0x00009D49015C7131 AS DateTime), CAST(0x00009D49015C7131 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (240, N'NJ.Imagefindings', 1, 4, N'Date and time of brain image findings:', 1, NULL, NULL, CAST(0x00009D49015C703B AS DateTime), CAST(0x00009D49015C703B AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (241, N'NJ.Insurance', 1, 5, N'Additional NJ Health Insurance Status:', 1, NULL, NULL, CAST(0x00009D49015C7026 AS DateTime), CAST(0x00009D49015C7026 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (242, N'NJ.Sbp185', 1, 2, N'No SBP > 185 or DBP > 100 mmHg despite treatment', 1, NULL, NULL, CAST(0x00009D49015C704B AS DateTime), CAST(0x00009D49015C704B AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (243, N'NJ.Recentsurgery', 1, 2, N'No Recent surgery/trauma (<15 days)', 1, NULL, NULL, CAST(0x00009D49015C706B AS DateTime), CAST(0x00009D49015C706B AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (244, N'NJ.Seizureonset', 1, 2, N'No Seizure at onset', 1, NULL, NULL, CAST(0x00009D49015C705B AS DateTime), CAST(0x00009D49015C705B AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (245, N'NJ.Mi', 1, 0, N'Middle Initial', 1, NULL, NULL, CAST(0x00009D49015C6FE6 AS DateTime), CAST(0x00009D49015C6FE6 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (246, N'NJ.Firstname', 1, 0, N'First Name', 1, NULL, NULL, CAST(0x00009D49015C6FD6 AS DateTime), CAST(0x00009D49015C6FD6 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (247, N'GS.Jp.Birthdate', 1, 4, N'Birth Date', 1, NULL, NULL, CAST(0x00009D49015C6FF7 AS DateTime), CAST(0x00009D49015C6FF7 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (248, N'NJ.Zipcode', 1, 0, N'Zip Code', 1, NULL, NULL, CAST(0x00009D49015C7016 AS DateTime), CAST(0x00009D49015C7016 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (249, N'NJ.Ssn', 1, 3, N'SS#', 1, NULL, NULL, CAST(0x00009D49015C7007 AS DateTime), CAST(0x00009D49015C7007 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (250, N'NJ.Spinesurgery', 1, 2, N'No Recent intracranial or spinal surgery, head trauma, or stroke (<3 mo.)', 1, NULL, NULL, CAST(0x00009D49015C707B AS DateTime), CAST(0x00009D49015C707B AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (251, N'NJ.Comorbid', 1, 2, N'No Increased risk of bleeding due to comorbid conditions (see coding instructions)', 1, NULL, NULL, CAST(0x00009D49015C70EF AS DateTime), CAST(0x00009D49015C70EF AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (252, N'NJ.Glucose', 1, 2, N'No Glucose < 50 or > 400 mg/dl', 1, NULL, NULL, CAST(0x00009D49015C70DF AS DateTime), CAST(0x00009D49015C70DF AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (253, N'NJ.Tpaoutsidehosp', 1, 2, N'No IV or IA tPA given at outside hospital', 1, NULL, NULL, CAST(0x00009D49015C70FF AS DateTime), CAST(0x00009D49015C70FF AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (254, N'NJ.Lifeexpect', 1, 2, N'No Life expectancy < 1 year or severe co-morbid illness or CMO on admission', 1, NULL, NULL, CAST(0x00009D49015C7120 AS DateTime), CAST(0x00009D49015C7120 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (255, N'NJ.Leftthrombus', 1, 2, N'No Left heart thrombus', 1, NULL, NULL, CAST(0x00009D49015C710F AS DateTime), CAST(0x00009D49015C710F AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (256, N'NJ.Activebleed', 1, 2, N'No Active internal bleeding (<22 days) ', 1, NULL, NULL, CAST(0x00009D49015C709D AS DateTime), CAST(0x00009D49015C709D AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (257, N'NJ.Histtumor', 1, 2, N'No History of intracranial hemorrhage or brain aneurysm or vascular malformation or brain tumor', 1, NULL, NULL, CAST(0x00009D49015C708D AS DateTime), CAST(0x00009D49015C708D AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (258, N'NJ.Platlets', 1, 2, N'No Platelets <100,000, PTT> 40 sec after heparin use, or PT > 15 or INR > 1.7, or known bleeding diathesis', 1, NULL, NULL, CAST(0x00009D49015C70AE AS DateTime), CAST(0x00009D49015C70AE AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (259, N'NJ.Ctfindings', 1, 2, N'No CT findings (ICH, SAH, or major infarct signs)', 1, NULL, NULL, CAST(0x00009D49015C70CE AS DateTime), CAST(0x00009D49015C70CE AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (260, N'NJ.Susphemo', 1, 2, N'No Suspicion of subarachnoid hemorrhage', 1, NULL, NULL, CAST(0x00009D49015C70BE AS DateTime), CAST(0x00009D49015C70BE AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (261, N'GS.Jp.Laborddatetime.Precision', 1, 5, N'Lab Tests ordered Precision', 1, NULL, NULL, CAST(0x00009D49015C6C6A AS DateTime), CAST(0x00009D49015C6C6A AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (262, N'GS.Diagdm', 1, 5, N'New Diagnosis of Diabetes?', 1, NULL, NULL, CAST(0x00009D49015C686A AS DateTime), CAST(0x00009D49015C686A AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (263, N'GS.Intensivestatin', 1, 5, N'Intensive Statin Therapy', 1, NULL, NULL, CAST(0x00009D49015C6856 AS DateTime), CAST(0x00009D49015C6856 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (264, N'GS.Diagdmbasis', 1, 6, N'Basis for Diagnosis?', 1, NULL, NULL, CAST(0x00009D49015C687B AS DateTime), CAST(0x00009D49015C687C AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (265, N'GS.Antismokingtx', 1, 5, N'Anti-Smoking Tx', 1, NULL, NULL, CAST(0x00009D49015C68A2 AS DateTime), CAST(0x00009D49015C68A2 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (266, N'GS.Dmmed', 1, 6, N'Diabetic Tx', 1, NULL, NULL, CAST(0x00009D49015C688D AS DateTime), CAST(0x00009D49015C688D AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (267, N'GS.Antihyper', 1, 6, N'Anti-hypertensive Tx', 1, NULL, NULL, CAST(0x00009D49015C680B AS DateTime), CAST(0x00009D49015C680B AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (268, N'GS.Whynoatrialmeds', 1, 6, N'If no, documented reasons for no anticoagulation', 1, NULL, NULL, CAST(0x00009D49015C67F5 AS DateTime), CAST(0x00009D49015C67F5 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (269, N'GS.Cholredtx', 1, 6, N'Cholesterol Reducing Tx', 1, NULL, NULL, CAST(0x00009D49015C6820 AS DateTime), CAST(0x00009D49015C6820 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (270, N'JC.Athero', 1, 5, N'Documentation that the patient has evidence of atherosclerosis? ', 1, NULL, NULL, CAST(0x00009D49015C6845 AS DateTime), CAST(0x00009D49015C6845 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (271, N'JC.Nostatindisc', 1, 5, N'Documented reason for not prescribing a statin medication at discharge?', 1, NULL, NULL, CAST(0x00009D49015C6834 AS DateTime), CAST(0x00009D49015C6834 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (272, N'GS.Lifestyle', 1, 5, N'Reducing weight and/or increasing activity recommendations ', 1, NULL, NULL, CAST(0x00009D49015C68B5 AS DateTime), CAST(0x00009D49015C68B5 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (273, N'JC.Edufollowup', 1, 5, N'Need for follow-up after discharge', 1, NULL, NULL, CAST(0x00009D49015C6931 AS DateTime), CAST(0x00009D49015C6931 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (274, N'JC.Eduems', 1, 5, N'How to activate EMS for stroke', 1, NULL, NULL, CAST(0x00009D49015C6920 AS DateTime), CAST(0x00009D49015C6920 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (275, N'JC.Edumeds', 1, 5, N'Their prescribed medications', 1, NULL, NULL, CAST(0x00009D49015C6943 AS DateTime), CAST(0x00009D49015C6943 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (276, N'GS.Comments', 1, 0, N'Additional Comments', 1, NULL, NULL, CAST(0x00009D49015C6967 AS DateTime), CAST(0x00009D49015C6967 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (277, N'JC.Assessrehab', 1, 5, N'Patient assessed for and/or received rehabilitation services during this hospitalization?', 1, NULL, NULL, CAST(0x00009D49015C6955 AS DateTime), CAST(0x00009D49015C6955 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (278, N'GS.Adadiet', 1, 5, N'TLC Diet or equivalent', 1, NULL, NULL, CAST(0x00009D49015C68D9 AS DateTime), CAST(0x00009D49015C68D9 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (279, N'GS.Sodiumdiet', 1, 5, N'Anti-hypertensive Diet', 1, NULL, NULL, CAST(0x00009D49015C68C7 AS DateTime), CAST(0x00009D49015C68C7 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (280, N'GS.Dmteaching', 1, 5, N'Was Diabetes Teaching Provided?', 1, NULL, NULL, CAST(0x00009D49015C68EB AS DateTime), CAST(0x00009D49015C68EB AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (281, N'JC.Eduwarning', 1, 5, N'Stroke Warning Signs and Symptoms', 1, NULL, NULL, CAST(0x00009D49015C690F AS DateTime), CAST(0x00009D49015C690F AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (282, N'JC.Edurisk', 1, 5, N'Personal modifiable risk factors for stroke', 1, NULL, NULL, CAST(0x00009D49015C68FE AS DateTime), CAST(0x00009D49015C68FE AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (283, N'GS.Afibdischarge', 1, 5, N'If atrial fib/flutter or history of PAF documented, was patient discharged on anticoagulation?', 1, NULL, NULL, CAST(0x00009D49015C67E3 AS DateTime), CAST(0x00009D49015C67E3 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (284, N'GS.Antithromboticyesno', 1, 5, N'Antithrombotic Medication(s) at Discharge', 1, NULL, NULL, CAST(0x00009D49015C66AE AS DateTime), CAST(0x00009D49015C66AE AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (285, N'GS.Icd9nostroke', 1, 2, N'No Stroke or TIA related ICD-9 code present', 1, NULL, NULL, CAST(0x00009D49015C669C AS DateTime), CAST(0x00009D49015C669C AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (286, N'GS.Antithrombotic1class', 1, 5, N'Antithrombotic Class (first dropdown list)', 1, NULL, NULL, CAST(0x00009D49015C66C1 AS DateTime), CAST(0x00009D49015C66C2 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (287, N'GS.Antithrombotic3class', 1, 5, N'Antithrombotic Class (third dropdown list)', 1, NULL, NULL, CAST(0x00009D49015C66E3 AS DateTime), CAST(0x00009D49015C66E3 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (288, N'GS.Antithrombotic2class', 1, 5, N'Antithrombotic Class (second dropdown list)', 1, NULL, NULL, CAST(0x00009D49015C66D2 AS DateTime), CAST(0x00009D49015C66D2 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (289, N'JC.Otherproceduredate3.Utd', 1, 0, N'', 1, NULL, NULL, CAST(0x00009D49015C665B AS DateTime), CAST(0x00009D49015C665B AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (290, N'JC.Otherproceduredate2.Utd', 1, 0, N'', 1, NULL, NULL, CAST(0x00009D49015C664B AS DateTime), CAST(0x00009D49015C664B AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (291, N'JC.Otherproceduredate4.Utd', 1, 0, N'', 1, NULL, NULL, CAST(0x00009D49015C666B AS DateTime), CAST(0x00009D49015C666B AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (292, N'GS.Icd9stroke', 1, 0, N'ICD-9 discharge diagnosis related to stroke', 1, NULL, NULL, CAST(0x00009D49015C668B AS DateTime), CAST(0x00009D49015C668B AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (293, N'JC.Otherproceduredate5.Utd', 1, 0, N'', 1, NULL, NULL, CAST(0x00009D49015C667C AS DateTime), CAST(0x00009D49015C667C AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (294, N'GS.Antithrombotic4class', 1, 5, N'Antithrombotic Class (fourth dropdown list)', 1, NULL, NULL, CAST(0x00009D49015C66F5 AS DateTime), CAST(0x00009D49015C66F5 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (295, N'GS.Antithrombotic4', 1, 5, N'Antithrombotics (fourth dropdown list)', 1, NULL, NULL, CAST(0x00009D49015C678F AS DateTime), CAST(0x00009D49015C678F AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (296, N'GS.Antithrombotic3freq', 1, 5, N'Antithrombotic Frequency (assoc’d w/ third list)', 1, NULL, NULL, CAST(0x00009D49015C677B AS DateTime), CAST(0x00009D49015C677B AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (297, N'GS.Antithrombotic4freq', 1, 5, N'Antithrombotic Frequency (assoc’d w/ fourth list)', 1, NULL, NULL, CAST(0x00009D49015C67A8 AS DateTime), CAST(0x00009D49015C67A8 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (298, N'GS.Persistentafib', 1, 5, N'Persistent or paroxysmal Atrial Fibrillation/Flutter ', 1, NULL, NULL, CAST(0x00009D49015C67D2 AS DateTime), CAST(0x00009D49015C67D2 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (299, N'GS.Reasonnoantithrom', 1, 6, N'If no antithrombotic therapy at discharge, give reason(s)', 1, NULL, NULL, CAST(0x00009D49015C67BF AS DateTime), CAST(0x00009D49015C67BF AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (300, N'GS.Antithrombotic1freq', 1, 5, N'Antithrombotic Frequency (assoc’d w/ first list)', 1, NULL, NULL, CAST(0x00009D49015C6721 AS DateTime), CAST(0x00009D49015C6721 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (301, N'GS.Antithrombotic1', 1, 5, N'Antithrombotics (first dropdown list)', 1, NULL, NULL, CAST(0x00009D49015C6708 AS DateTime), CAST(0x00009D49015C6708 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (302, N'GS.Antithrombotic2', 1, 5, N'Antithrombotics (second dropdown list)', 1, NULL, NULL, CAST(0x00009D49015C6735 AS DateTime), CAST(0x00009D49015C6735 AS DateTime))
+
+print 'Processed 300 total records'
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (303, N'GS.Antithrombotic3', 1, 5, N'Antithrombotics (third dropdown list)', 1, NULL, NULL, CAST(0x00009D49015C6763 AS DateTime), CAST(0x00009D49015C6763 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (304, N'GS.Antithrombotic2freq', 1, 5, N'Antithrombotic Frequency (assoc’d w/ second list)', 1, NULL, NULL, CAST(0x00009D49015C674F AS DateTime), CAST(0x00009D49015C674F AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (305, N'GS.Jp.Jcahocomm', 1, 0, N'Additional comments on PSC fields', 1, NULL, NULL, CAST(0x00009D49015C6B63 AS DateTime), CAST(0x00009D49015C6B63 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (306, N'JC.Addstroke ', 1, 0, N'Stroke Core Measure Additional Comments', 1, NULL, NULL, CAST(0x00009D49015C6B54 AS DateTime), CAST(0x00009D49015C6B54 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (307, N'GS.Jp.Teamdatetime', 1, 4, N'Date/Time Stroke Team activated', 1, NULL, NULL, CAST(0x00009D49015C6B75 AS DateTime), CAST(0x00009D49015C6B75 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (308, N'GS.Jp.Arrivdatetime', 1, 4, N'Date/Time Stroke Team Arrived', 1, NULL, NULL, CAST(0x00009D49015C6B97 AS DateTime), CAST(0x00009D49015C6B97 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (309, N'GS.Jp.Teamdatetime.Precision', 1, 5, N'Stroke Team activated Precision', 1, NULL, NULL, CAST(0x00009D49015C6B85 AS DateTime), CAST(0x00009D49015C6B85 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (310, N'JC.Noantithrodisc', 1, 5, N'Is there documentation by a physician/advanced practice nurse/physician assistant (physician/APN/PA) or pharmacist in the medical record of a reason for not prescribing antithrombotic therapy at hospital discharge?  ', 1, NULL, NULL, CAST(0x00009D49015C6B0E AS DateTime), CAST(0x00009D49015C6B0E AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (311, N'JC.Antithrodisc', 1, 5, N'Was antithrombotic therapy prescribed at hospital discharge?  ', 1, NULL, NULL, CAST(0x00009D49015C6AFD AS DateTime), CAST(0x00009D49015C6AFD AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (312, N'JC.Anticoagdisc', 1, 5, N'Was anticoagulation therapy prescribed at hospital discharge?  ', 1, NULL, NULL, CAST(0x00009D49015C6B1F AS DateTime), CAST(0x00009D49015C6B1F AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (313, N'JC.Statindisc', 1, 5, N'Was a statin medication prescribed at discharge?  ', 1, NULL, NULL, CAST(0x00009D49015C6B42 AS DateTime), CAST(0x00009D49015C6B42 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (314, N'JC.Noanticoagdisc', 1, 5, N'Is there documentation by a physician/advanced practice nurse/physician assistant (physician/APN/PA) or pharmacist in the medical record of a reason for not prescribing anticoagulation therapy at hospital discharge?   ', 1, NULL, NULL, CAST(0x00009D49015C6B31 AS DateTime), CAST(0x00009D49015C6B31 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (315, N'GS.Jp.Arrivdatetime.Precision', 1, 5, N'Date/Time Stroke Team Arrived Precision', 1, NULL, NULL, CAST(0x00009D49015C6BA6 AS DateTime), CAST(0x00009D49015C6BA6 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (316, N'GS.Jp.Ctrepdatetime', 1, 4, N'Date/Time Brain Imaging reported', 1, NULL, NULL, CAST(0x00009D49015C6C23 AS DateTime), CAST(0x00009D49015C6C23 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (317, N'GS.Jp.Ctorddatetime.Precision', 1, 5, N'Brain Imaging ordered Precision', 1, NULL, NULL, CAST(0x00009D49015C6C11 AS DateTime), CAST(0x00009D49015C6C11 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (318, N'GS.Jp.Ctrepdatetime.Precision', 1, 5, N'Brain Imaging reported Precision', 1, NULL, NULL, CAST(0x00009D49015C6C35 AS DateTime), CAST(0x00009D49015C6C35 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (319, N'GS.Jp.Laborddatetime', 1, 4, N'Date/Time Lab Tests ordered', 1, NULL, NULL, CAST(0x00009D49015C6C59 AS DateTime), CAST(0x00009D49015C6C59 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (320, N'GS.Jp.Ctna', 1, 2, N'N/A', 1, NULL, NULL, CAST(0x00009D49015C6C47 AS DateTime), CAST(0x00009D49015C6C47 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (321, N'GS.Jp.Nsurgdatetime', 1, 4, N'Date/Time Neurological Services consulted', 1, NULL, NULL, CAST(0x00009D49015C6BCC AS DateTime), CAST(0x00009D49015C6BCC AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (322, N'GS.Jp.Teamna', 1, 2, N'N/A', 1, NULL, NULL, CAST(0x00009D49015C6BBB AS DateTime), CAST(0x00009D49015C6BBB AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (323, N'GS.Jp.Nsurgdatetime.Precision', 1, 5, N'Neurological Services consulted Precision', 1, NULL, NULL, CAST(0x00009D49015C6BDD AS DateTime), CAST(0x00009D49015C6BDD AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (324, N'GS.Jp.Ctorddatetime', 1, 4, N'Date/Time Brain Imaging ordered', 1, NULL, NULL, CAST(0x00009D49015C6C02 AS DateTime), CAST(0x00009D49015C6C02 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (325, N'GS.Jp.Neurosurgna', 1, 2, N'N/A', 1, NULL, NULL, CAST(0x00009D49015C6BF0 AS DateTime), CAST(0x00009D49015C6BF0 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (326, N'JC.Discdatetime', 1, 4, N'Discharge Date/Time', 1, NULL, NULL, CAST(0x00009D49015C6AED AS DateTime), CAST(0x00009D49015C6AED AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (327, N'JC.Hic', 1, 5, N'HIC Number', 1, NULL, NULL, CAST(0x00009D49015C69E0 AS DateTime), CAST(0x00009D49015C69E0 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (328, N'JC.Medicare', 1, 5, N'What is the patient’s source of payment for this episode of care?', 1, NULL, NULL, CAST(0x00009D49015C69CE AS DateTime), CAST(0x00009D49015C69CE AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (329, N'JC.Admitsource', 1, 5, N'Point of Origin for Admission or Visit', 1, NULL, NULL, CAST(0x00009D49015C69F0 AS DateTime), CAST(0x00009D49015C69F0 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (330, N'JC.Prelipidmed', 1, 5, N'Is there documentation that the patient was on a lipid-lowering medication prior to hospital arrival?', 1, NULL, NULL, CAST(0x00009D49015C6A17 AS DateTime), CAST(0x00009D49015C6A17 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (331, N'JC.Fibflutter', 1, 5, N'Was history of atrial fibrillation/flutter or current finding of atrial fibrillation/flutter documented in the medical record?', 1, NULL, NULL, CAST(0x00009D49015C6A06 AS DateTime), CAST(0x00009D49015C6A06 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (332, N'SP.Race', 1, 5, N'Race', 1, NULL, NULL, CAST(0x00009D49015C6988 AS DateTime), CAST(0x00009D49015C6988 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (333, N'JC.Sample2', 1, 2, N'Check if patient is part of a sample', 1, NULL, NULL, CAST(0x00009D49015C6977 AS DateTime), CAST(0x00009D49015C6977 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (334, N'JC.Zip1', 1, 5, N'Zip Code', 1, NULL, NULL, CAST(0x00009D49015C699C AS DateTime), CAST(0x00009D49015C699C AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (335, N'JC.Homeless', 1, 2, N'Homeless', 1, NULL, NULL, CAST(0x00009D49015C69BB AS DateTime), CAST(0x00009D49015C69BB AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (336, N'JC.Zip2', 1, 5, N'Zip Code Extension', 1, NULL, NULL, CAST(0x00009D49015C69AB AS DateTime), CAST(0x00009D49015C69AB AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (337, N'JC.Lastknown', 1, 5, N'Is there documentation that the date and time of last known well was witnessed or reported?', 1, NULL, NULL, CAST(0x00009D49015C6A2A AS DateTime), CAST(0x00009D49015C6A2A AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (338, N'JC.Antithroday2', 1, 5, N'Was antithrombotic therapy administered by the end of hospital day 2?   ', 1, NULL, NULL, CAST(0x00009D49015C6AA6 AS DateTime), CAST(0x00009D49015C6AA6 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (339, N'JC.Novteadmis', 1, 5, N'Is there documentation why prophylaxis was not administered at hospital admission?  ', 1, NULL, NULL, CAST(0x00009D49015C6A95 AS DateTime), CAST(0x00009D49015C6A95 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (340, N'JC.Noantithroday2', 1, 5, N'Is there documentation by a physician/advanced practice nurse/physician assistant (physician/APN/PA) or pharmacist in the medical record of a reason for not administering antithrombotic therapy by end of hospital day 2?', 1, NULL, NULL, CAST(0x00009D49015C6AB9 AS DateTime), CAST(0x00009D49015C6AB9 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (341, N'JC.Ldlhigh', 1, 5, N'Was the patient’s highest LDL-cholesterol (LDL-c) level greater than or equal to 100 mg/dL in the first 48 hours or within 30 days prior to hospital arrival?  ', 1, NULL, NULL, CAST(0x00009D49015C6ADB AS DateTime), CAST(0x00009D49015C6ADB AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (342, N'JC.Ldlmeas', 1, 5, N'Was the LDL-cholesterol (LDL-c) measured within the first 48 hours or 30 days prior to hospital arrival?  ', 1, NULL, NULL, CAST(0x00009D49015C6ACA AS DateTime), CAST(0x00009D49015C6ACA AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (343, N'JC.Lastknowndttm.Precision', 1, 0, N'Last Known Well Date/Time Precision', 1, NULL, NULL, CAST(0x00009D49015C6A4D AS DateTime), CAST(0x00009D49015C6A4D AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (344, N'JC.Lastknowndttm', 1, 4, N'What was the date/time at which the patient was last known to be well or at his or her baseline state of health?  ', 1, NULL, NULL, CAST(0x00009D49015C6A3B AS DateTime), CAST(0x00009D49015C6A3B AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (345, N'JC.Comfortonly2', 1, 5, N'When is the earliest physician/APN/PA documentation of comfort measures only?', 1, NULL, NULL, CAST(0x00009D49015C6A5E AS DateTime), CAST(0x00009D49015C6A5E AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (346, N'JC.Noivthro', 1, 5, N'Documented Reasons for not initiating IV thrombolytic?  ', 1, NULL, NULL, CAST(0x00009D49015C6A82 AS DateTime), CAST(0x00009D49015C6A82 AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (347, N'JC.Ivoriatherapy', 1, 5, N'Did the patient receive IV or IA thrombolytic (t-PA) therapy at this hospital or within 24 hours prior to arrival?  ', 1, NULL, NULL, CAST(0x00009D49015C6A71 AS DateTime), CAST(0x00009D49015C6A71 AS DateTime))
+
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (348, N'GS.Discdatetime.Precision', 1, 5, N'Disc Datetime Precision', 1, NULL, NULL, CAST(0x00009D49015C5BCF AS DateTime), CAST(0x00009D49015C5BCF AS DateTime))
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (349, N'JC.Admitdate.Precision', 1, 5, N'Admitdate Precision', 1, NULL, NULL, CAST(0x00009D49015C5BCF AS DateTime), CAST(0x00009D49015C5BCF AS DateTime))
+
+
+SET IDENTITY_INSERT [dbo].[EurekaField] OFF
+
+SET IDENTITY_INSERT [dbo].[AlienField] ON
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (1, N'gs_uti', 177, 2, NULL, NULL, NULL, CAST(0x00009D49015C6EDD AS DateTime), CAST(0x00009D49015C6EDD AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (2, N'gs_pc_admorder', 178, 2, NULL, NULL, NULL, CAST(0x00009D49015C6F04 AS DateTime), CAST(0x00009D49015C6F04 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (3, N'gs_pc_emsgcsnd', 175, 2, NULL, NULL, NULL, CAST(0x00009D49015C6ECB AS DateTime), CAST(0x00009D49015C6ECB AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (4, N'gs_pc_emsgcsintub', 176, 2, NULL, NULL, NULL, CAST(0x00009D49015C6EBB AS DateTime), CAST(0x00009D49015C6EBB AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (5, N'gs_pc_predx', 181, 2, NULL, NULL, NULL, CAST(0x00009D49015C6E5C AS DateTime), CAST(0x00009D49015C6E5C AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (6, N'gs_pc_emsgcsmot', 182, 2, NULL, NULL, NULL, CAST(0x00009D49015C6E83 AS DateTime), CAST(0x00009D49015C6E83 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (7, N'gs_foley', 179, 2, NULL, NULL, NULL, CAST(0x00009D49015C6EF1 AS DateTime), CAST(0x00009D49015C6EF1 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (8, N'gs_pc_emsgcseye', 180, 2, NULL, NULL, NULL, CAST(0x00009D49015C6E70 AS DateTime), CAST(0x00009D49015C6E70 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (9, N'gs_lastknownwell_precision', 169, 2, NULL, NULL, NULL, CAST(0x00009D49015C5E56 AS DateTime), CAST(0x00009D49015C5E56 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (10, N'gs_lastknownwell', 170, 2, NULL, NULL, NULL, CAST(0x00009D49015C5E4A AS DateTime), CAST(0x00009D49015C5E4A AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (11, N'jc_ivthroinit', 167, 2, NULL, NULL, NULL, CAST(0x00009D49015C5EC6 AS DateTime), CAST(0x00009D49015C5EC6 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (12, N'gs_firstimage', 168, 2, NULL, NULL, NULL, CAST(0x00009D49015C5EB4 AS DateTime), CAST(0x00009D49015C5EB4 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (13, N'gs_symptomdatetime_precision', 173, 2, NULL, NULL, NULL, CAST(0x00009D49015C5E70 AS DateTime), CAST(0x00009D49015C5E70 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (14, N'jc_otherproceduredate1_utd', 174, 2, NULL, NULL, NULL, CAST(0x00009D49015C663B AS DateTime), CAST(0x00009D49015C663B AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (15, N'gs_symptomdatetime', 171, 2, NULL, NULL, NULL, CAST(0x00009D49015C5E64 AS DateTime), CAST(0x00009D49015C5E64 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (16, N'gs_sameaslastknown', 172, 2, NULL, NULL, NULL, CAST(0x00009D49015C5E7F AS DateTime), CAST(0x00009D49015C5E7F AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (17, N'gs_pc_emsgcstot', 183, 2, NULL, NULL, NULL, CAST(0x00009D49015C6EA9 AS DateTime), CAST(0x00009D49015C6EA9 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (18, N'ny_mdassessdt', 194, 2, NULL, NULL, NULL, CAST(0x00009D49015C6F71 AS DateTime), CAST(0x00009D49015C6F71 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (19, N'ny_decisionmaker', 195, 2, NULL, NULL, NULL, CAST(0x00009D49015C6F5E AS DateTime), CAST(0x00009D49015C6F5E AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (20, N'gs_rehabsvcs', 192, 2, NULL, NULL, NULL, CAST(0x00009D49015C6F27 AS DateTime), CAST(0x00009D49015C6F27 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (21, N'ny_brainimageread', 193, 2, NULL, NULL, NULL, CAST(0x00009D49015C6F4D AS DateTime), CAST(0x00009D49015C6F4D AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (22, N'gs_jp_ecgcpdatetime', 198, 2, NULL, NULL, NULL, CAST(0x00009D49015C6CD4 AS DateTime), CAST(0x00009D49015C6CD4 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (23, N'gs_jp_ecgna', 199, 2, NULL, NULL, NULL, CAST(0x00009D49015C6CF7 AS DateTime), CAST(0x00009D49015C6CF7 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (24, N'gs_pc_emscalldt', 196, 2, NULL, NULL, NULL, CAST(0x00009D49015C6E4C AS DateTime), CAST(0x00009D49015C6E4C AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (25, N'gs_jp_ecgcpdatetime_precision', 197, 2, NULL, NULL, NULL, CAST(0x00009D49015C6CE5 AS DateTime), CAST(0x00009D49015C6CE5 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (26, N'nj_hospcode', 186, 2, NULL, NULL, NULL, CAST(0x00009D49015C6F94 AS DateTime), CAST(0x00009D49015C6F94 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (27, N'nj_hosptype', 187, 2, NULL, NULL, NULL, CAST(0x00009D49015C6F82 AS DateTime), CAST(0x00009D49015C6F83 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (28, N'gs_pc_emsgcsvoic', 184, 2, NULL, NULL, NULL, CAST(0x00009D49015C6E96 AS DateTime), CAST(0x00009D49015C6E96 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (29, N'jc_principaldiagnosis', 185, 2, NULL, NULL, NULL, CAST(0x00009D49015C6F15 AS DateTime), CAST(0x00009D49015C6F15 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (30, N'nj_mrn', 190, 2, NULL, NULL, NULL, CAST(0x00009D49015C6FB6 AS DateTime), CAST(0x00009D49015C6FB6 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (31, N'gs_pc_dischchlst', 191, 2, NULL, NULL, NULL, CAST(0x00009D49015C6F3A AS DateTime), CAST(0x00009D49015C6F3A AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (32, N'nj_transhospcode', 188, 2, NULL, NULL, NULL, CAST(0x00009D49015C6FA7 AS DateTime), CAST(0x00009D49015C6FA7 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (33, N'nj_lastname', 189, 2, NULL, NULL, NULL, CAST(0x00009D49015C6FC6 AS DateTime), CAST(0x00009D49015C6FC6 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (34, N'gs_thromexptype', 144, 2, NULL, NULL, NULL, CAST(0x00009D49015C6044 AS DateTime), CAST(0x00009D49015C6044 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (35, N'gs_comfortonly', 145, 2, NULL, NULL, NULL, CAST(0x00009D49015C6065 AS DateTime), CAST(0x00009D49015C6065 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (36, N'gs_thromexp', 142, 2, NULL, NULL, NULL, CAST(0x00009D49015C6031 AS DateTime), CAST(0x00009D49015C6031 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (37, N'gs_iatpaoutside', 143, 2, NULL, NULL, NULL, CAST(0x00009D49015C6020 AS DateTime), CAST(0x00009D49015C6020 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (38, N'gs_noivthromoth2', 148, 2, NULL, NULL, NULL, CAST(0x00009D49015C5FC0 AS DateTime), CAST(0x00009D49015C5FC0 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (39, N'gs_iatpa', 149, 2, NULL, NULL, NULL, CAST(0x00009D49015C5FE1 AS DateTime), CAST(0x00009D49015C5FE1 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (40, N'gs_nothromcomment', 146, 2, NULL, NULL, NULL, CAST(0x00009D49015C6055 AS DateTime), CAST(0x00009D49015C6055 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (41, N'gs_ivtpaoutside', 147, 2, NULL, NULL, NULL, CAST(0x00009D49015C5FD0 AS DateTime), CAST(0x00009D49015C5FD0 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (42, N'gs_ivtpanc', 136, 2, NULL, NULL, NULL, CAST(0x00009D49015C5EFB AS DateTime), CAST(0x00009D49015C5EFB AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (43, N'jc_ivthrodttm_precision', 137, 2, NULL, NULL, NULL, CAST(0x00009D49015C5EEA AS DateTime), CAST(0x00009D49015C5EEA AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (44, N'gs_noivhosp2', 134, 2, NULL, NULL, NULL, CAST(0x00009D49015C5F9D AS DateTime), CAST(0x00009D49015C5F9D AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (45, N'gs_noivhosp', 135, 2, NULL, NULL, NULL, CAST(0x00009D49015C5F89 AS DateTime), CAST(0x00009D49015C5F89 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (46, N'gs_noivcontra', 140, 2, NULL, NULL, NULL, CAST(0x00009D49015C5F1E AS DateTime), CAST(0x00009D49015C5F1E AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (47, N'gs_noivthromoth', 141, 2, NULL, NULL, NULL, CAST(0x00009D49015C5FAF AS DateTime), CAST(0x00009D49015C5FAF AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (48, N'gs_ivtpalatenc', 138, 2, NULL, NULL, NULL, CAST(0x00009D49015C5F0C AS DateTime), CAST(0x00009D49015C5F0C AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (49, N'gs_noivwarning', 139, 2, NULL, NULL, NULL, CAST(0x00009D49015C5F33 AS DateTime), CAST(0x00009D49015C5F33 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (50, N'gs_iatpadatetime_precision', 150, 2, NULL, NULL, NULL, CAST(0x00009D49015C600C AS DateTime), CAST(0x00009D49015C600C AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (51, N'gs_ambulatadmit', 161, 2, NULL, NULL, NULL, CAST(0x00009D49015C5DEB AS DateTime), CAST(0x00009D49015C5DEB AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (52, N'gs_nihss11', 162, 2, NULL, NULL, NULL, CAST(0x00009D49015C5DDD AS DateTime), CAST(0x00009D49015C5DDD AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (53, N'gs_nihss8', 159, 2, NULL, NULL, NULL, CAST(0x00009D49015C5DAC AS DateTime), CAST(0x00009D49015C5DAC AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (54, N'gs_nihss10', 160, 2, NULL, NULL, NULL, CAST(0x00009D49015C5DCD AS DateTime), CAST(0x00009D49015C5DCD AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (55, N'gs_ctcomp', 165, 2, NULL, NULL, NULL, CAST(0x00009D49015C5E8C AS DateTime), CAST(0x00009D49015C5E8C AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (56, N'gs_ctcompdatetime_precision', 166, 2, NULL, NULL, NULL, CAST(0x00009D49015C5EA5 AS DateTime), CAST(0x00009D49015C5EA5 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (57, N'gs_dmmedprior', 163, 2, NULL, NULL, NULL, CAST(0x00009D49015C5E3C AS DateTime), CAST(0x00009D49015C5E3C AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (58, N'gs_ctcompdatetime', 164, 2, NULL, NULL, NULL, CAST(0x00009D49015C5E99 AS DateTime), CAST(0x00009D49015C5E99 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (59, N'gs_antiplateletprior', 153, 2, NULL, NULL, NULL, CAST(0x00009D49015C5E07 AS DateTime), CAST(0x00009D49015C5E07 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (60, N'gs_nopriormeds', 154, 2, NULL, NULL, NULL, CAST(0x00009D49015C5DF9 AS DateTime), CAST(0x00009D49015C5DF9 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (61, N'gs_iatpadatetime', 151, 2, NULL, NULL, NULL, CAST(0x00009D49015C5FF2 AS DateTime), CAST(0x00009D49015C5FF2 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (62, N'jc_ivthrodttm', 152, 2, NULL, NULL, NULL, CAST(0x00009D49015C5ED7 AS DateTime), CAST(0x00009D49015C5ED7 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (63, N'gs_antihyperprior', 157, 2, NULL, NULL, NULL, CAST(0x00009D49015C5E20 AS DateTime), CAST(0x00009D49015C5E20 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (64, N'gs_nihss9', 158, 2, NULL, NULL, NULL, CAST(0x00009D49015C5DBA AS DateTime), CAST(0x00009D49015C5DBA AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (65, N'gs_anticoagprior', 155, 2, NULL, NULL, NULL, CAST(0x00009D49015C5E14 AS DateTime), CAST(0x00009D49015C5E14 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (66, N'gs_cholredprior', 156, 2, NULL, NULL, NULL, CAST(0x00009D49015C5E2E AS DateTime), CAST(0x00009D49015C5E2E AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (67, N'nj_recentsurgery', 243, 2, NULL, NULL, NULL, CAST(0x00009D49015C706B AS DateTime), CAST(0x00009D49015C706B AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (68, N'nj_seizureonset', 244, 2, NULL, NULL, NULL, CAST(0x00009D49015C705B AS DateTime), CAST(0x00009D49015C705B AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (69, N'nj_insurance', 241, 2, NULL, NULL, NULL, CAST(0x00009D49015C7026 AS DateTime), CAST(0x00009D49015C7026 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (70, N'nj_sbp185', 242, 2, NULL, NULL, NULL, CAST(0x00009D49015C704B AS DateTime), CAST(0x00009D49015C704B AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (71, N'gs_jp_birthdate', 247, 2, NULL, NULL, NULL, CAST(0x00009D49015C6FF7 AS DateTime), CAST(0x00009D49015C6FF7 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (72, N'nj_zipcode', 248, 2, NULL, NULL, NULL, CAST(0x00009D49015C7016 AS DateTime), CAST(0x00009D49015C7016 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (73, N'nj_mi', 245, 2, NULL, NULL, NULL, CAST(0x00009D49015C6FE6 AS DateTime), CAST(0x00009D49015C6FE6 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (74, N'nj_firstname', 246, 2, NULL, NULL, NULL, CAST(0x00009D49015C6FD6 AS DateTime), CAST(0x00009D49015C6FD6 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (75, N'nj_othertherapy', 235, 2, NULL, NULL, NULL, CAST(0x00009D49015C71FA AS DateTime), CAST(0x00009D49015C71FA AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (76, N'nj_rhythm', 236, 2, NULL, NULL, NULL, CAST(0x00009D49015C721D AS DateTime), CAST(0x00009D49015C721D AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (77, N'nj_reserved2', 233, 2, NULL, NULL, NULL, CAST(0x00009D49015C728A AS DateTime), CAST(0x00009D49015C728A AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (78, N'nj_heparin', 234, 2, NULL, NULL, NULL, CAST(0x00009D49015C720C AS DateTime), CAST(0x00009D49015C720C AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (79, N'nj_pregnancy', 239, 2, NULL, NULL, NULL, CAST(0x00009D49015C7131 AS DateTime), CAST(0x00009D49015C7131 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (80, N'nj_imagefindings', 240, 2, NULL, NULL, NULL, CAST(0x00009D49015C703B AS DateTime), CAST(0x00009D49015C703B AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (81, N'gs_foley', 237, 2, NULL, NULL, NULL, CAST(0x00009D49015C7241 AS DateTime), CAST(0x00009D49015C7241 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (82, N'gs_uti', 238, 2, NULL, NULL, NULL, CAST(0x00009D49015C722F AS DateTime), CAST(0x00009D49015C722F AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (83, N'nj_ssn', 249, 2, NULL, NULL, NULL, CAST(0x00009D49015C7007 AS DateTime), CAST(0x00009D49015C7007 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (84, N'nj_susphemo', 260, 2, NULL, NULL, NULL, CAST(0x00009D49015C70BE AS DateTime), CAST(0x00009D49015C70BE AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (85, N'gs_jp_laborddatetime_precision', 261, 2, NULL, NULL, NULL, CAST(0x00009D49015C6C6A AS DateTime), CAST(0x00009D49015C6C6A AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (86, N'nj_platlets', 258, 2, NULL, NULL, NULL, CAST(0x00009D49015C70AE AS DateTime), CAST(0x00009D49015C70AE AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (87, N'nj_ctfindings', 259, 2, NULL, NULL, NULL, CAST(0x00009D49015C70CE AS DateTime), CAST(0x00009D49015C70CE AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (88, N'gs_diagdmbasis', 264, 2, NULL, NULL, NULL, CAST(0x00009D49015C687C AS DateTime), CAST(0x00009D49015C687C AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (89, N'gs_antismokingtx', 265, 2, NULL, NULL, NULL, CAST(0x00009D49015C68A2 AS DateTime), CAST(0x00009D49015C68A2 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (90, N'gs_diagdm', 262, 2, NULL, NULL, NULL, CAST(0x00009D49015C686A AS DateTime), CAST(0x00009D49015C686A AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (91, N'gs_intensivestatin', 263, 2, NULL, NULL, NULL, CAST(0x00009D49015C6856 AS DateTime), CAST(0x00009D49015C6857 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (92, N'nj_glucose', 252, 2, NULL, NULL, NULL, CAST(0x00009D49015C70DF AS DateTime), CAST(0x00009D49015C70DF AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (93, N'nj_tpaoutsidehosp', 253, 2, NULL, NULL, NULL, CAST(0x00009D49015C70FF AS DateTime), CAST(0x00009D49015C70FF AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (94, N'nj_spinesurgery', 250, 2, NULL, NULL, NULL, CAST(0x00009D49015C707B AS DateTime), CAST(0x00009D49015C707B AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (95, N'nj_comorbid', 251, 2, NULL, NULL, NULL, CAST(0x00009D49015C70EF AS DateTime), CAST(0x00009D49015C70EF AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (96, N'nj_activebleed', 256, 2, NULL, NULL, NULL, CAST(0x00009D49015C709D AS DateTime), CAST(0x00009D49015C709D AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (97, N'nj_histtumor', 257, 2, NULL, NULL, NULL, CAST(0x00009D49015C708D AS DateTime), CAST(0x00009D49015C708D AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (98, N'nj_lifeexpect', 254, 2, NULL, NULL, NULL, CAST(0x00009D49015C7120 AS DateTime), CAST(0x00009D49015C7120 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (99, N'nj_leftthrombus', 255, 2, NULL, NULL, NULL, CAST(0x00009D49015C710F AS DateTime), CAST(0x00009D49015C710F AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (100, N'gs_antithrombotic2dose', 210, 2, N'\d+\.?\d*', NULL, NULL, CAST(0x00009D49015C6DDC AS DateTime), CAST(0x00009D49015C6DDC AS DateTime))
+
+print 'Processed 100 total records'
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (101, N'gs_antithrombotic4dose', 211, 2, N'\d+\.?\d*', NULL, NULL, CAST(0x00009D49015C6E25 AS DateTime), CAST(0x00009D49015C6E25 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (102, N'gs_scr', 1, 2, NULL, NULL, NULL, CAST(0x00009D49015C626D AS DateTime), CAST(0x00009D49015C626D AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (103, N'gs_ptcontract', 209, 2, NULL, NULL, NULL, CAST(0x00009D49015C6D96 AS DateTime), CAST(0x00009D49015C6D96 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (104, N'gs_jp_xcompdatetime_precision', 214, 2, NULL, NULL, NULL, CAST(0x00009D49015C6D3C AS DateTime), CAST(0x00009D49015C6D3C AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (105, N'gs_pmtused', 215, 2, NULL, NULL, NULL, CAST(0x00009D49015C6D60 AS DateTime), CAST(0x00009D49015C6D60 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (106, N'gs_antithrombotic3dose', 212, 2, N'\d+\.?\d*', NULL, NULL, CAST(0x00009D49015C6E02 AS DateTime), CAST(0x00009D49015C6E02 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (107, N'gs_jp_xrayna', 213, 2, NULL, NULL, NULL, CAST(0x00009D49015C6D4D AS DateTime), CAST(0x00009D49015C6D4D AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (108, N'gs_jp_labcpdatetime_precision', 202, 2, NULL, NULL, NULL, CAST(0x00009D49015C6C8C AS DateTime), CAST(0x00009D49015C6C8C AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (109, N'gs_jp_labcpdatetime', 203, 2, NULL, NULL, NULL, CAST(0x00009D49015C6C7C AS DateTime), CAST(0x00009D49015C6C7C AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (110, N'gs_jp_xorderdatetime_precision', 200, 2, NULL, NULL, NULL, CAST(0x00009D49015C6D1A AS DateTime), CAST(0x00009D49015C6D1A AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (111, N'gs_jp_xorderdatetime', 201, 2, NULL, NULL, NULL, CAST(0x00009D49015C6D07 AS DateTime), CAST(0x00009D49015C6D07 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (112, N'gs_jp_ecgorddatetime', 206, 2, NULL, NULL, NULL, CAST(0x00009D49015C6CB0 AS DateTime), CAST(0x00009D49015C6CB0 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (113, N'gs_jp_xcompdatetime', 207, 2, NULL, NULL, NULL, CAST(0x00009D49015C6D2C AS DateTime), CAST(0x00009D49015C6D2C AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (114, N'gs_jp_labna', 204, 2, NULL, NULL, NULL, CAST(0x00009D49015C6C9F AS DateTime), CAST(0x00009D49015C6C9F AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (115, N'gs_jp_ecgorddatetime_precision', 205, 2, NULL, NULL, NULL, CAST(0x00009D49015C6CC0 AS DateTime), CAST(0x00009D49015C6CC0 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (116, N'gs_pc_dischchlst', 216, 2, NULL, NULL, NULL, CAST(0x00009D49015C6D84 AS DateTime), CAST(0x00009D49015C6D84 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (117, N'nj_advanceage', 227, 2, NULL, NULL, NULL, CAST(0x00009D49015C7175 AS DateTime), CAST(0x00009D49015C7175 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (118, N'nj_otherthrom', 228, 2, NULL, NULL, NULL, CAST(0x00009D49015C71E8 AS DateTime), CAST(0x00009D49015C71E8 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (119, N'nj_toosevere', 225, 2, NULL, NULL, NULL, CAST(0x00009D49015C7165 AS DateTime), CAST(0x00009D49015C7165 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (120, N'nj_careteam', 226, 2, NULL, NULL, NULL, CAST(0x00009D49015C7186 AS DateTime), CAST(0x00009D49015C7186 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (121, N'nj_reserved1', 231, 2, NULL, NULL, NULL, CAST(0x00009D49015C727A AS DateTime), CAST(0x00009D49015C727A AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (122, N'nj_reserved3', 232, 2, NULL, NULL, NULL, CAST(0x00009D49015C729A AS DateTime), CAST(0x00009D49015C729A AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (123, N'nj_rankin', 229, 2, NULL, NULL, NULL, CAST(0x00009D49015C7264 AS DateTime), CAST(0x00009D49015C7264 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (124, N'nj_2hemorrhage', 230, 2, NULL, NULL, NULL, CAST(0x00009D49015C7253 AS DateTime), CAST(0x00009D49015C7253 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (125, N'nj_faildiagnose', 219, 2, NULL, NULL, NULL, CAST(0x00009D49015C7196 AS DateTime), CAST(0x00009D49015C7196 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (126, N'nj_noivaccess', 220, 2, NULL, NULL, NULL, CAST(0x00009D49015C71B6 AS DateTime), CAST(0x00009D49015C71B6 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (127, N'gs_pc_admorder', 217, 2, NULL, NULL, NULL, CAST(0x00009D49015C6D73 AS DateTime), CAST(0x00009D49015C6D73 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (128, N'nj_timedelay', 218, 2, NULL, NULL, NULL, CAST(0x00009D49015C71A6 AS DateTime), CAST(0x00009D49015C71A6 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (129, N'nj_rapidimprove', 223, 2, NULL, NULL, NULL, CAST(0x00009D49015C7150 AS DateTime), CAST(0x00009D49015C7150 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (130, N'nj_refused', 224, 2, NULL, NULL, NULL, CAST(0x00009D49015C7140 AS DateTime), CAST(0x00009D49015C7140 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (131, N'nj_delayarrival', 221, 2, NULL, NULL, NULL, CAST(0x00009D49015C71D8 AS DateTime), CAST(0x00009D49015C71D8 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (132, N'nj_nootherfactor', 222, 2, NULL, NULL, NULL, CAST(0x00009D49015C71C8 AS DateTime), CAST(0x00009D49015C71C8 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (133, N'jc_otherdiagnosis15', 45, 2, NULL, NULL, NULL, CAST(0x00009D49015C6539 AS DateTime), CAST(0x00009D49015C6539 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (134, N'jc_otherdiagnosis17', 46, 2, NULL, NULL, NULL, CAST(0x00009D49015C6559 AS DateTime), CAST(0x00009D49015C6559 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (135, N'jc_vteprophylaxis7', 43, 2, NULL, NULL, NULL, CAST(0x00009D49015C6184 AS DateTime), CAST(0x00009D49015C6184 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (136, N'jc_otherdiagnosis16', 44, 2, NULL, NULL, NULL, CAST(0x00009D49015C6548 AS DateTime), CAST(0x00009D49015C6548 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (137, N'jc_otherdiagnosis11', 49, 2, NULL, NULL, NULL, CAST(0x00009D49015C64F2 AS DateTime), CAST(0x00009D49015C64F2 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (138, N'jc_otherdiagnosis10', 50, 2, NULL, NULL, NULL, CAST(0x00009D49015C64E2 AS DateTime), CAST(0x00009D49015C64E2 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (139, N'jc_principalprocedurdt', 47, 2, NULL, NULL, NULL, CAST(0x00009D49015C6579 AS DateTime), CAST(0x00009D49015C6579 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (140, N'jc_principalprocedure', 48, 2, NULL, NULL, NULL, CAST(0x00009D49015C6569 AS DateTime), CAST(0x00009D49015C6569 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (141, N'gs_triglycerides', 37, 2, NULL, NULL, NULL, CAST(0x00009D49015C61E9 AS DateTime), CAST(0x00009D49015C61E9 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (142, N'gs_cholesterol', 38, 2, NULL, NULL, NULL, CAST(0x00009D49015C61D8 AS DateTime), CAST(0x00009D49015C61D8 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (143, N'gs_dvtdoc', 35, 2, NULL, NULL, NULL, CAST(0x00009D49015C61A4 AS DateTime), CAST(0x00009D49015C61A4 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (144, N'gs_antithrom2type', 36, 2, NULL, NULL, NULL, CAST(0x00009D49015C61C8 AS DateTime), CAST(0x00009D49015C61C8 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (145, N'jc_vteprophylaxis8', 41, 2, NULL, NULL, NULL, CAST(0x00009D49015C6173 AS DateTime), CAST(0x00009D49015C6173 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (146, N'jc_vtedate', 42, 2, NULL, NULL, NULL, CAST(0x00009D49015C6194 AS DateTime), CAST(0x00009D49015C6195 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (147, N'jc_vteprophylaxis6', 39, 2, NULL, NULL, NULL, CAST(0x00009D49015C6162 AS DateTime), CAST(0x00009D49015C6162 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (148, N'jc_vteprophylaxis5', 40, 2, NULL, NULL, NULL, CAST(0x00009D49015C6151 AS DateTime), CAST(0x00009D49015C6151 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (149, N'jc_otherdiagnosis12', 51, 2, NULL, NULL, NULL, CAST(0x00009D49015C6502 AS DateTime), CAST(0x00009D49015C6502 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (150, N'jc_otherprocedure3', 62, 2, NULL, NULL, NULL, CAST(0x00009D49015C65BB AS DateTime), CAST(0x00009D49015C65BB AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (151, N'jc_otherprocedure5', 63, 2, NULL, NULL, NULL, CAST(0x00009D49015C65DB AS DateTime), CAST(0x00009D49015C65DB AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (152, N'jc_otherprocedure2', 60, 2, NULL, NULL, NULL, CAST(0x00009D49015C65AA AS DateTime), CAST(0x00009D49015C65AA AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (153, N'jc_otherprocedure1', 61, 2, NULL, NULL, NULL, CAST(0x00009D49015C659A AS DateTime), CAST(0x00009D49015C659A AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (154, N'jc_discstatus', 66, 2, NULL, NULL, NULL, CAST(0x00009D49015C63CD AS DateTime), CAST(0x00009D49015C63CD AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (155, N'gs_death', 67, 2, NULL, NULL, NULL, CAST(0x00009D49015C63BB AS DateTime), CAST(0x00009D49015C63BB AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (156, N'jc_otherprocedure4', 64, 2, NULL, NULL, NULL, CAST(0x00009D49015C65CB AS DateTime), CAST(0x00009D49015C65CB AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (157, N'jc_otherdiagnosis9', 65, 2, NULL, NULL, NULL, CAST(0x00009D49015C64D2 AS DateTime), CAST(0x00009D49015C64D2 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (158, N'jc_princproced_dtutd', 54, 2, NULL, NULL, NULL, CAST(0x00009D49015C6589 AS DateTime), CAST(0x00009D49015C6589 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (159, N'jc_otherproceduredate2', 55, 2, NULL, NULL, NULL, CAST(0x00009D49015C65FB AS DateTime), CAST(0x00009D49015C65FB AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (160, N'jc_otherdiagnosis14', 52, 2, NULL, NULL, NULL, CAST(0x00009D49015C6522 AS DateTime), CAST(0x00009D49015C6522 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (161, N'jc_otherdiagnosis13', 53, 2, NULL, NULL, NULL, CAST(0x00009D49015C6512 AS DateTime), CAST(0x00009D49015C6512 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (162, N'jc_otherproceduredate5', 58, 2, NULL, NULL, NULL, CAST(0x00009D49015C662B AS DateTime), CAST(0x00009D49015C662B AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (163, N'jc_otherproceduredate4', 59, 2, NULL, NULL, NULL, CAST(0x00009D49015C661B AS DateTime), CAST(0x00009D49015C661B AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (164, N'jc_otherproceduredate1', 56, 2, NULL, NULL, NULL, CAST(0x00009D49015C65EC AS DateTime), CAST(0x00009D49015C65EC AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (165, N'jc_otherproceduredate3', 57, 2, NULL, NULL, NULL, CAST(0x00009D49015C660B AS DateTime), CAST(0x00009D49015C660B AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (166, N'gs_weight', 12, 2, NULL, NULL, NULL, CAST(0x00009D49015C6324 AS DateTime), CAST(0x00009D49015C6324 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (167, N'gs_heightnd', 13, 2, NULL, NULL, NULL, CAST(0x00009D49015C6313 AS DateTime), CAST(0x00009D49015C6313 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (168, N'gs_hba1cnd', 10, 2, NULL, NULL, NULL, CAST(0x00009D49015C623A AS DateTime), CAST(0x00009D49015C623A AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (169, N'gs_hr', 11, 2, NULL, NULL, NULL, CAST(0x00009D49015C62B0 AS DateTime), CAST(0x00009D49015C62B0 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (170, N'gs_weightnd', 16, 2, NULL, NULL, NULL, CAST(0x00009D49015C6346 AS DateTime), CAST(0x00009D49015C6346 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (171, N'gs_diastolic', 17, 2, NULL, NULL, NULL, CAST(0x00009D49015C62D0 AS DateTime), CAST(0x00009D49015C62D0 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (172, N'gs_weightunit', 14, 2, NULL, NULL, NULL, CAST(0x00009D49015C6335 AS DateTime), CAST(0x00009D49015C6335 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (173, N'gs_waist', 15, 2, NULL, NULL, NULL, CAST(0x00009D49015C6356 AS DateTime), CAST(0x00009D49015C6356 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (174, N'gs_inr_nd', 4, 2, NULL, NULL, NULL, CAST(0x00009D49015C629F AS DateTime), CAST(0x00009D49015C629F AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (175, N'gs_inr', 5, 2, NULL, NULL, NULL, CAST(0x00009D49015C628E AS DateTime), CAST(0x00009D49015C628E AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (176, N'gs_bloodglucose_nd', 2, 2, NULL, NULL, NULL, CAST(0x00009D49015C625B AS DateTime), CAST(0x00009D49015C625B AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (177, N'gs_scr_nd', 3, 2, NULL, NULL, NULL, CAST(0x00009D49015C627D AS DateTime), CAST(0x00009D49015C627D AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (178, N'gs_hba1c', 8, 2, NULL, NULL, NULL, CAST(0x00009D49015C622A AS DateTime), CAST(0x00009D49015C622A AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (179, N'gs_fastingblood', 9, 2, NULL, NULL, NULL, CAST(0x00009D49015C624B AS DateTime), CAST(0x00009D49015C624B AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (180, N'gs_lipidsnd', 6, 2, NULL, NULL, NULL, CAST(0x00009D49015C6219 AS DateTime), CAST(0x00009D49015C6219 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (181, N'gs_ldl', 7, 2, NULL, NULL, NULL, CAST(0x00009D49015C6208 AS DateTime), CAST(0x00009D49015C6209 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (182, N'gs_systolic', 18, 2, NULL, NULL, NULL, CAST(0x00009D49015C62BF AS DateTime), CAST(0x00009D49015C62BF AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (183, N'gs_comptransf', 29, 2, NULL, NULL, NULL, CAST(0x00009D49015C608B AS DateTime), CAST(0x00009D49015C608B AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (184, N'gs_dysphagia', 30, 2, NULL, NULL, NULL, CAST(0x00009D49015C60B1 AS DateTime), CAST(0x00009D49015C60B1 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (185, N'jc_vteprophylaxis2', 27, 2, NULL, NULL, NULL, CAST(0x00009D49015C611E AS DateTime), CAST(0x00009D49015C611E AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (186, N'gs_npo', 28, 2, NULL, NULL, NULL, CAST(0x00009D49015C609F AS DateTime), CAST(0x00009D49015C609F AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (187, N'jc_vteprophylaxis4', 33, 2, NULL, NULL, NULL, CAST(0x00009D49015C613F AS DateTime), CAST(0x00009D49015C613F AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (188, N'gs_antiplateletadm', 34, 2, NULL, NULL, NULL, CAST(0x00009D49015C61B6 AS DateTime), CAST(0x00009D49015C61B6 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (189, N'gs_pneumonia', 31, 2, NULL, NULL, NULL, CAST(0x00009D49015C60D6 AS DateTime), CAST(0x00009D49015C60D6 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (190, N'gs_dysphagiaresult', 32, 2, NULL, NULL, NULL, CAST(0x00009D49015C60C4 AS DateTime), CAST(0x00009D49015C60C4 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (191, N'gs_height', 21, 2, NULL, NULL, NULL, CAST(0x00009D49015C62F1 AS DateTime), CAST(0x00009D49015C62F1 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (192, N'gs_hdl', 22, 2, NULL, NULL, NULL, CAST(0x00009D49015C61F9 AS DateTime), CAST(0x00009D49015C61F9 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (193, N'gs_vital_nd', 19, 2, NULL, NULL, NULL, CAST(0x00009D49015C62E0 AS DateTime), CAST(0x00009D49015C62E0 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (194, N'gs_heightunit', 20, 2, NULL, NULL, NULL, CAST(0x00009D49015C6302 AS DateTime), CAST(0x00009D49015C6302 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (195, N'jc_vteprophylaxis1', 25, 2, NULL, NULL, NULL, CAST(0x00009D49015C610E AS DateTime), CAST(0x00009D49015C610E AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (196, N'jc_vteprophylaxis3', 26, 2, NULL, NULL, NULL, CAST(0x00009D49015C612F AS DateTime), CAST(0x00009D49015C612F AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (197, N'gs_prophylaxis_2ndday', 23, 2, NULL, NULL, NULL, CAST(0x00009D49015C60FA AS DateTime), CAST(0x00009D49015C60FA AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (198, N'gs_patientambulating', 24, 2, NULL, NULL, NULL, CAST(0x00009D49015C60E8 AS DateTime), CAST(0x00009D49015C60E8 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (199, N'gs_patientarrival', 111, 2, NULL, NULL, NULL, CAST(0x00009D49015C5B8A AS DateTime), CAST(0x00009D49015C5B8A AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (200, N'gs_placercd', 112, 2, NULL, NULL, NULL, CAST(0x00009D49015C5BA6 AS DateTime), CAST(0x00009D49015C5BA6 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (201, N'gs_insurance', 109, 2, NULL, NULL, NULL, CAST(0x00009D49015C5C63 AS DateTime), CAST(0x00009D49015C5C63 AS DateTime))
+
+print 'Processed 200 total records'
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (202, N'jc_edpatient', 110, 2, NULL, NULL, NULL, CAST(0x00009D49015C5B99 AS DateTime), CAST(0x00009D49015C5B99 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (203, N'jc_clinical', 115, 2, NULL, NULL, NULL, CAST(0x00009D49015C4A6C AS DateTime), CAST(0x00009D49015C4A6C AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (204, N'patient_os_id', 116, 2, NULL, NULL, NULL, CAST(0x00009D49015C4A5F AS DateTime), CAST(0x00009D49015C4A5F AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (205, N'jc_arrdatetime', 113, 2, NULL, NULL, NULL, CAST(0x00009D49015C5BC3 AS DateTime), CAST(0x00009D49015C5BC3 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (206, N'gs_prehosp_ems', 114, 2, NULL, NULL, NULL, CAST(0x00009D49015C5BB6 AS DateTime), CAST(0x00009D49015C5BB6 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (207, N'gs_nihss6r', 103, 2, NULL, NULL, NULL, CAST(0x00009D49015C5D8C AS DateTime), CAST(0x00009D49015C5D8C AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (208, N'gs_nihss1c', 104, 2, NULL, NULL, NULL, CAST(0x00009D49015C5D23 AS DateTime), CAST(0x00009D49015C5D23 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (209, N'gs_nihss6l', 101, 2, NULL, NULL, NULL, CAST(0x00009D49015C5D7C AS DateTime), CAST(0x00009D49015C5D7C AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (210, N'gs_nihss7', 102, 2, NULL, NULL, NULL, CAST(0x00009D49015C5D9C AS DateTime), CAST(0x00009D49015C5D9C AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (211, N'gs_nihss4', 107, 2, NULL, NULL, NULL, CAST(0x00009D49015C5D4D AS DateTime), CAST(0x00009D49015C5D4D AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (212, N'gs_nihss3', 108, 2, NULL, NULL, NULL, CAST(0x00009D49015C5D40 AS DateTime), CAST(0x00009D49015C5D40 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (213, N'gs_nihss1b', 105, 2, NULL, NULL, NULL, CAST(0x00009D49015C5D14 AS DateTime), CAST(0x00009D49015C5D14 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (214, N'gs_nihss2', 106, 2, NULL, NULL, NULL, CAST(0x00009D49015C5D31 AS DateTime), CAST(0x00009D49015C5D31 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (215, N'jc_carotid ', 117, 2, NULL, NULL, NULL, CAST(0x00009D49015C5B42 AS DateTime), CAST(0x00009D49015C5B42 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (216, N'Gs_careunit', 128, 2, NULL, NULL, NULL, CAST(0x00009D49015C5BF6 AS DateTime), CAST(0x00009D49015C5BF6 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (217, N'jc_dob', 129, 2, NULL, NULL, NULL, CAST(0x00009D49015C5C13 AS DateTime), CAST(0x00009D49015C5C13 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (218, N'gs_notadmit', 126, 2, NULL, NULL, NULL, CAST(0x00009D49015C5BE9 AS DateTime), CAST(0x00009D49015C5BE9 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (219, N'jc_admitdate', 127, 2, NULL, NULL, NULL, CAST(0x00009D49015C5BDC AS DateTime), CAST(0x00009D49015C5BDC AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (220, N'gs_noivcontra2', 132, 2, NULL, NULL, NULL, CAST(0x00009D49015C5F49 AS DateTime), CAST(0x00009D49015C5F49 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (221, N'gs_addwarnings', 133, 2, NULL, NULL, NULL, CAST(0x00009D49015C5F76 AS DateTime), CAST(0x00009D49015C5F76 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (222, N'jc_providernpi', 130, 2, NULL, NULL, NULL, CAST(0x00009D49015C5C07 AS DateTime), CAST(0x00009D49015C5C07 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (223, N'gs_noivwarning2', 131, 2, NULL, NULL, NULL, CAST(0x00009D49015C5F60 AS DateTime), CAST(0x00009D49015C5F60 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (224, N'jc_arrdatetime_precision', 120, 2, NULL, NULL, NULL, CAST(0x00009D49015C5BCF AS DateTime), CAST(0x00009D49015C5BCF AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (225, N'jc_gender', 121, 2, NULL, NULL, NULL, CAST(0x00009D49015C5C2B AS DateTime), CAST(0x00009D49015C5C2B AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (226, N'gs_symptomlocation', 118, 2, NULL, NULL, NULL, CAST(0x00009D49015C5B78 AS DateTime), CAST(0x00009D49015C5B78 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (227, N'gs_jp_admitsource', 119, 2, NULL, NULL, NULL, CAST(0x00009D49015C5B5E AS DateTime), CAST(0x00009D49015C5B5E AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (228, N'gs_otherrace', 124, 2, NULL, NULL, NULL, CAST(0x00009D49015C5C56 AS DateTime), CAST(0x00009D49015C5C56 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (229, N'gs_race', 125, 2, NULL, NULL, NULL, CAST(0x00009D49015C5C45 AS DateTime), CAST(0x00009D49015C5C45 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (230, N'gs_age', 122, 2, NULL, NULL, NULL, CAST(0x00009D49015C5C1F AS DateTime), CAST(0x00009D49015C5C1F AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (231, N'sp_ethnic', 123, 2, NULL, NULL, NULL, CAST(0x00009D49015C5C38 AS DateTime), CAST(0x00009D49015C5C38 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (232, N'jc_otherdiagnosis4', 78, 2, NULL, NULL, NULL, CAST(0x00009D49015C6482 AS DateTime), CAST(0x00009D49015C6482 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (233, N'jc_otherdiagnosis6', 79, 2, NULL, NULL, NULL, CAST(0x00009D49015C64A2 AS DateTime), CAST(0x00009D49015C64A2 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (234, N'gs_disch_bpnd', 76, 2, NULL, NULL, NULL, CAST(0x00009D49015C641F AS DateTime), CAST(0x00009D49015C641F AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (235, N'jc_otherdiagnosis5', 77, 2, NULL, NULL, NULL, CAST(0x00009D49015C6492 AS DateTime), CAST(0x00009D49015C6492 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (236, N'jc_otherdiagnosis', 82, 2, NULL, NULL, NULL, CAST(0x00009D49015C6442 AS DateTime), CAST(0x00009D49015C6442 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (237, N'jc_principaldiagnosis', 83, 2, NULL, NULL, NULL, CAST(0x00009D49015C6432 AS DateTime), CAST(0x00009D49015C6432 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (238, N'jc_otherdiagnosis8', 80, 2, NULL, NULL, NULL, CAST(0x00009D49015C64C2 AS DateTime), CAST(0x00009D49015C64C2 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (239, N'jc_otherdiagnosis7', 81, 2, NULL, NULL, NULL, CAST(0x00009D49015C64B2 AS DateTime), CAST(0x00009D49015C64B2 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (240, N'gs_disch_systolic', 70, 2, NULL, NULL, NULL, CAST(0x00009D49015C63FF AS DateTime), CAST(0x00009D49015C63FF AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (241, N'gs_waist_nd', 71, 2, NULL, NULL, NULL, CAST(0x00009D49015C6379 AS DateTime), CAST(0x00009D49015C6379 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (242, N'gs_funcstatus', 68, 2, NULL, NULL, NULL, CAST(0x00009D49015C63EB AS DateTime), CAST(0x00009D49015C63EB AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (243, N'gs_disch_diastolic', 69, 2, NULL, NULL, NULL, CAST(0x00009D49015C640F AS DateTime), CAST(0x00009D49015C640F AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (244, N'gs_discdatetime', 74, 2, NULL, NULL, NULL, CAST(0x00009D49015C63AB AS DateTime), CAST(0x00009D49015C63AB AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (245, N'gs_bmind', 75, 2, NULL, NULL, NULL, CAST(0x00009D49015C639A AS DateTime), CAST(0x00009D49015C639A AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (246, N'gs_waistunits', 72, 2, NULL, NULL, NULL, CAST(0x00009D49015C6368 AS DateTime), CAST(0x00009D49015C6368 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (247, N'gs_bmi', 73, 2, NULL, NULL, NULL, CAST(0x00009D49015C6389 AS DateTime), CAST(0x00009D49015C6389 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (248, N'jc_otherdiagnosis1', 84, 2, NULL, NULL, NULL, CAST(0x00009D49015C6452 AS DateTime), CAST(0x00009D49015C6452 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (249, N'gs_ambulatprior', 95, 2, NULL, NULL, NULL, CAST(0x00009D49015C5C95 AS DateTime), CAST(0x00009D49015C5C95 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (250, N'gs_tiaduration', 96, 2, NULL, NULL, NULL, CAST(0x00009D49015C5CB5 AS DateTime), CAST(0x00009D49015C5CB5 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (251, N'gs_nomedhx', 93, 2, NULL, NULL, NULL, CAST(0x00009D49015C5C87 AS DateTime), CAST(0x00009D49015C5C87 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (252, N'gs_med_hist', 94, 2, NULL, NULL, NULL, CAST(0x00009D49015C5C72 AS DateTime), CAST(0x00009D49015C5C72 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (253, N'gs_nihss5r', 99, 2, NULL, NULL, NULL, CAST(0x00009D49015C5D6D AS DateTime), CAST(0x00009D49015C5D6D AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (254, N'gs_nihss5l', 100, 2, NULL, NULL, NULL, CAST(0x00009D49015C5D5D AS DateTime), CAST(0x00009D49015C5D5D AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (255, N'gs_stroketype', 97, 2, NULL, NULL, NULL, CAST(0x00009D49015C5CA4 AS DateTime), CAST(0x00009D49015C5CA4 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (256, N'gs_nihss1a', 98, 2, NULL, NULL, NULL, CAST(0x00009D49015C5D06 AS DateTime), CAST(0x00009D49015C5D06 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (257, N'gs_comp_throm_ther', 87, 2, NULL, NULL, NULL, CAST(0x00009D49015C6078 AS DateTime), CAST(0x00009D49015C6078 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (258, N'gs_symptresolve', 88, 2, NULL, NULL, NULL, CAST(0x00009D49015C5CD0 AS DateTime), CAST(0x00009D49015C5CD0 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (259, N'jc_otherdiagnosis3', 85, 2, NULL, NULL, NULL, CAST(0x00009D49015C6472 AS DateTime), CAST(0x00009D49015C6472 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (260, N'jc_otherdiagnosis2', 86, 2, NULL, NULL, NULL, CAST(0x00009D49015C6462 AS DateTime), CAST(0x00009D49015C6462 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (261, N'gs_nihssadmit', 91, 2, NULL, NULL, NULL, CAST(0x00009D49015C5CFA AS DateTime), CAST(0x00009D49015C5CFA AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (262, N'gs_nihssproretro', 92, 2, NULL, NULL, NULL, CAST(0x00009D49015C5CEC AS DateTime), CAST(0x00009D49015C5CEC AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (263, N'gs_initexam', 89, 2, NULL, NULL, NULL, CAST(0x00009D49015C5CC3 AS DateTime), CAST(0x00009D49015C5CC3 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (264, N'gs_nihssperformed', 90, 2, NULL, NULL, NULL, CAST(0x00009D49015C5CDE AS DateTime), CAST(0x00009D49015C5CDE AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (265, N'jc_homeless', 335, 2, NULL, NULL, NULL, CAST(0x00009D49015C69BB AS DateTime), CAST(0x00009D49015C69BB AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (266, N'gs_dmteaching', 280, 2, NULL, NULL, NULL, CAST(0x00009D49015C68EB AS DateTime), CAST(0x00009D49015C68EB AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (267, N'gs_persistentafib', 298, 2, NULL, NULL, NULL, CAST(0x00009D49015C67D2 AS DateTime), CAST(0x00009D49015C67D2 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (268, N'gs_antithrombotic4class', 294, 2, NULL, NULL, NULL, CAST(0x00009D49015C66F5 AS DateTime), CAST(0x00009D49015C66F5 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (269, N'jc_zip2', 336, 2, NULL, NULL, NULL, CAST(0x00009D49015C69AB AS DateTime), CAST(0x00009D49015C69AB AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (270, N'jc_noanticoagdisc', 314, 2, NULL, NULL, NULL, CAST(0x00009D49015C6B31 AS DateTime), CAST(0x00009D49015C6B31 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (271, N'jc_edurisk', 282, 2, NULL, NULL, NULL, CAST(0x00009D49015C68FE AS DateTime), CAST(0x00009D49015C68FE AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (272, N'gs_antithrombotic4', 295, 2, NULL, NULL, NULL, CAST(0x00009D49015C678F AS DateTime), CAST(0x00009D49015C678F AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (273, N'gs_jp_arrivdatetime_precision', 315, 2, NULL, NULL, NULL, CAST(0x00009D49015C6BA6 AS DateTime), CAST(0x00009D49015C6BA6 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (274, N'jc_zip1', 334, 2, NULL, NULL, NULL, CAST(0x00009D49015C699C AS DateTime), CAST(0x00009D49015C699C AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (275, N'jc_eduwarning', 281, 2, NULL, NULL, NULL, CAST(0x00009D49015C690F AS DateTime), CAST(0x00009D49015C690F AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (276, N'jc_sample2', 333, 2, NULL, NULL, NULL, CAST(0x00009D49015C6977 AS DateTime), CAST(0x00009D49015C6977 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (277, N'jc_otherproceduredate5_utd', 293, 2, NULL, NULL, NULL, CAST(0x00009D49015C667C AS DateTime), CAST(0x00009D49015C667C AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (278, N'gs_antithrombotic3', 303, 2, NULL, NULL, NULL, CAST(0x00009D49015C6763 AS DateTime), CAST(0x00009D49015C6763 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (279, N'jc_otherproceduredate2_utd', 290, 2, NULL, NULL, NULL, CAST(0x00009D49015C664B AS DateTime), CAST(0x00009D49015C664B AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (280, N'gs_antithrombotic1freq', 300, 2, NULL, NULL, NULL, CAST(0x00009D49015C6721 AS DateTime), CAST(0x00009D49015C6721 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (281, N'jc_antithroday2', 338, 2, NULL, NULL, NULL, CAST(0x00009D49015C6AA6 AS DateTime), CAST(0x00009D49015C6AA6 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (282, N'gs_adadiet', 278, 2, NULL, NULL, NULL, CAST(0x00009D49015C68D9 AS DateTime), CAST(0x00009D49015C68D9 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (283, N'jc_otherproceduredate3_utd', 289, 2, NULL, NULL, NULL, CAST(0x00009D49015C665B AS DateTime), CAST(0x00009D49015C665C AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (284, N'jc_otherproceduredate4_utd', 291, 2, NULL, NULL, NULL, CAST(0x00009D49015C666B AS DateTime), CAST(0x00009D49015C666B AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (285, N'jc_lastknown', 337, 2, NULL, NULL, NULL, CAST(0x00009D49015C6A2A AS DateTime), CAST(0x00009D49015C6A2A AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (286, N'gs_icd9stroke', 292, 2, NULL, NULL, NULL, CAST(0x00009D49015C668B AS DateTime), CAST(0x00009D49015C668B AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (287, N'gs_sodiumdiet', 279, 2, NULL, NULL, NULL, CAST(0x00009D49015C68C7 AS DateTime), CAST(0x00009D49015C68C7 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (288, N'jc_statindisc', 313, 2, NULL, NULL, NULL, CAST(0x00009D49015C6B42 AS DateTime), CAST(0x00009D49015C6B42 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (289, N'gs_reasonnoantithrom', 299, 2, NULL, NULL, NULL, CAST(0x00009D49015C67BF AS DateTime), CAST(0x00009D49015C67BF AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (290, N'gs_afibdischarge', 283, 2, NULL, NULL, NULL, CAST(0x00009D49015C67E3 AS DateTime), CAST(0x00009D49015C67E3 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (291, N'jc_admitsource', 329, 2, NULL, NULL, NULL, CAST(0x00009D49015C69F0 AS DateTime), CAST(0x00009D49015C69F0 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (292, N'jc_medicare', 328, 2, NULL, NULL, NULL, CAST(0x00009D49015C69CE AS DateTime), CAST(0x00009D49015C69CE AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (293, N'jc_hic', 327, 2, NULL, NULL, NULL, CAST(0x00009D49015C69E0 AS DateTime), CAST(0x00009D49015C69E0 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (294, N'gs_jp_teamna', 322, 2, NULL, NULL, NULL, CAST(0x00009D49015C6BBB AS DateTime), CAST(0x00009D49015C6BBB AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (295, N'gs_jp_nsurgdatetime_precision', 323, 2, NULL, NULL, NULL, CAST(0x00009D49015C6BDD AS DateTime), CAST(0x00009D49015C6BDD AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (296, N'jc_addstroke ', 306, 2, NULL, NULL, NULL, CAST(0x00009D49015C6B54 AS DateTime), CAST(0x00009D49015C6B54 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (297, N'gs_antithrombotic2freq', 304, 2, NULL, NULL, NULL, CAST(0x00009D49015C674F AS DateTime), CAST(0x00009D49015C674F AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (298, N'gs_antithrombotic3freq', 296, 2, NULL, NULL, NULL, CAST(0x00009D49015C677B AS DateTime), CAST(0x00009D49015C677B AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (299, N'gs_jp_ctorddatetime', 324, 2, NULL, NULL, NULL, CAST(0x00009D49015C6C02 AS DateTime), CAST(0x00009D49015C6C02 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (300, N'jc_discdatetime', 326, 2, NULL, NULL, NULL, CAST(0x00009D49015C6AED AS DateTime), CAST(0x00009D49015C6AED AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (301, N'gs_jp_neurosurgna', 325, 2, NULL, NULL, NULL, CAST(0x00009D49015C6BF0 AS DateTime), CAST(0x00009D49015C6BF0 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (302, N'gs_jp_jcahocomm', 305, 2, NULL, NULL, NULL, CAST(0x00009D49015C6B63 AS DateTime), CAST(0x00009D49015C6B63 AS DateTime))
+
+print 'Processed 300 total records'
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (303, N'gs_jp_teamdatetime', 307, 2, NULL, NULL, NULL, CAST(0x00009D49015C6B75 AS DateTime), CAST(0x00009D49015C6B75 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (304, N'gs_jp_ctorddatetime_precision', 317, 2, NULL, NULL, NULL, CAST(0x00009D49015C6C11 AS DateTime), CAST(0x00009D49015C6C11 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (305, N'jc_fibflutter', 331, 2, NULL, NULL, NULL, CAST(0x00009D49015C6A06 AS DateTime), CAST(0x00009D49015C6A06 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (306, N'gs_jp_arrivdatetime', 308, 2, NULL, NULL, NULL, CAST(0x00009D49015C6B97 AS DateTime), CAST(0x00009D49015C6B97 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (307, N'gs_jp_teamdatetime_precision', 309, 2, NULL, NULL, NULL, CAST(0x00009D49015C6B85 AS DateTime), CAST(0x00009D49015C6B85 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (308, N'gs_jp_ctrepdatetime', 316, 2, NULL, NULL, NULL, CAST(0x00009D49015C6C23 AS DateTime), CAST(0x00009D49015C6C23 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (309, N'sp_race', 332, 2, NULL, NULL, NULL, CAST(0x00009D49015C6988 AS DateTime), CAST(0x00009D49015C6988 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (310, N'gs_jp_laborddatetime', 319, 2, NULL, NULL, NULL, CAST(0x00009D49015C6C59 AS DateTime), CAST(0x00009D49015C6C59 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (311, N'gs_jp_ctna', 320, 2, NULL, NULL, NULL, CAST(0x00009D49015C6C47 AS DateTime), CAST(0x00009D49015C6C47 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (312, N'gs_jp_nsurgdatetime', 321, 2, NULL, NULL, NULL, CAST(0x00009D49015C6BCC AS DateTime), CAST(0x00009D49015C6BCC AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (313, N'gs_jp_ctrepdatetime_precision', 318, 2, NULL, NULL, NULL, CAST(0x00009D49015C6C35 AS DateTime), CAST(0x00009D49015C6C35 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (314, N'gs_antithromboticyesno', 284, 2, NULL, NULL, NULL, CAST(0x00009D49015C66AE AS DateTime), CAST(0x00009D49015C66AE AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (315, N'jc_prelipidmed', 330, 2, NULL, NULL, NULL, CAST(0x00009D49015C6A17 AS DateTime), CAST(0x00009D49015C6A17 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (316, N'jc_ivoriatherapy', 347, 2, NULL, NULL, NULL, CAST(0x00009D49015C6A71 AS DateTime), CAST(0x00009D49015C6A71 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (317, N'gs_antithrombotic2', 302, 2, NULL, NULL, NULL, CAST(0x00009D49015C6735 AS DateTime), CAST(0x00009D49015C6735 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (318, N'jc_ldlmeas', 342, 2, NULL, NULL, NULL, CAST(0x00009D49015C6ACA AS DateTime), CAST(0x00009D49015C6ACA AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (319, N'jc_noantithroday2', 340, 2, NULL, NULL, NULL, CAST(0x00009D49015C6AB9 AS DateTime), CAST(0x00009D49015C6AB9 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (320, N'jc_noantithrodisc', 310, 2, NULL, NULL, NULL, CAST(0x00009D49015C6B0E AS DateTime), CAST(0x00009D49015C6B0E AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (321, N'gs_antihyper', 267, 2, NULL, NULL, NULL, CAST(0x00009D49015C680B AS DateTime), CAST(0x00009D49015C680B AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (322, N'gs_lifestyle', 272, 2, NULL, NULL, NULL, CAST(0x00009D49015C68B5 AS DateTime), CAST(0x00009D49015C68B5 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (323, N'gs_antithrombotic3class', 287, 2, NULL, NULL, NULL, CAST(0x00009D49015C66E3 AS DateTime), CAST(0x00009D49015C66E3 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (324, N'jc_comfortonly2', 345, 2, NULL, NULL, NULL, CAST(0x00009D49015C6A5E AS DateTime), CAST(0x00009D49015C6A5F AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (325, N'gs_antithrombotic1', 301, 2, NULL, NULL, NULL, CAST(0x00009D49015C6708 AS DateTime), CAST(0x00009D49015C6708 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (326, N'jc_eduems', 274, 2, NULL, NULL, NULL, CAST(0x00009D49015C6920 AS DateTime), CAST(0x00009D49015C6920 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (327, N'gs_dmmed', 266, 2, NULL, NULL, NULL, CAST(0x00009D49015C688D AS DateTime), CAST(0x00009D49015C688D AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (328, N'jc_ldlhigh', 341, 2, NULL, NULL, NULL, CAST(0x00009D49015C6ADB AS DateTime), CAST(0x00009D49015C6ADB AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (329, N'jc_antithrodisc', 311, 2, NULL, NULL, NULL, CAST(0x00009D49015C6AFD AS DateTime), CAST(0x00009D49015C6AFD AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (330, N'jc_edumeds', 275, 2, NULL, NULL, NULL, CAST(0x00009D49015C6943 AS DateTime), CAST(0x00009D49015C6943 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (331, N'jc_edufollowup', 273, 2, NULL, NULL, NULL, CAST(0x00009D49015C6931 AS DateTime), CAST(0x00009D49015C6931 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (332, N'gs_antithrombotic1class', 286, 2, NULL, NULL, NULL, CAST(0x00009D49015C66C2 AS DateTime), CAST(0x00009D49015C66C2 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (333, N'jc_anticoagdisc', 312, 2, NULL, NULL, NULL, CAST(0x00009D49015C6B1F AS DateTime), CAST(0x00009D49015C6B1F AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (334, N'gs_antithrombotic2class', 288, 2, NULL, NULL, NULL, CAST(0x00009D49015C66D2 AS DateTime), CAST(0x00009D49015C66D2 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (335, N'jc_novteadmis', 339, 2, NULL, NULL, NULL, CAST(0x00009D49015C6A95 AS DateTime), CAST(0x00009D49015C6A95 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (336, N'gs_antithrombotic4freq', 297, 2, NULL, NULL, NULL, CAST(0x00009D49015C67A8 AS DateTime), CAST(0x00009D49015C67A8 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (337, N'jc_athero', 270, 2, NULL, NULL, NULL, CAST(0x00009D49015C6845 AS DateTime), CAST(0x00009D49015C6845 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (338, N'jc_noivthro', 346, 2, NULL, NULL, NULL, CAST(0x00009D49015C6A82 AS DateTime), CAST(0x00009D49015C6A82 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (339, N'jc_lastknowndttm_precision', 343, 2, NULL, NULL, NULL, CAST(0x00009D49015C6A4D AS DateTime), CAST(0x00009D49015C6A4D AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (340, N'jc_lastknowndttm', 344, 2, NULL, NULL, NULL, CAST(0x00009D49015C6A3B AS DateTime), CAST(0x00009D49015C6A3B AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (341, N'gs_whynoatrialmeds', 268, 2, NULL, NULL, NULL, CAST(0x00009D49015C67F5 AS DateTime), CAST(0x00009D49015C67F5 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (342, N'gs_icd9nostroke', 285, 2, NULL, NULL, NULL, CAST(0x00009D49015C669C AS DateTime), CAST(0x00009D49015C669C AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (343, N'gs_cholredtx', 269, 2, NULL, NULL, NULL, CAST(0x00009D49015C6820 AS DateTime), CAST(0x00009D49015C6820 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (344, N'jc_nostatindisc', 271, 2, NULL, NULL, NULL, CAST(0x00009D49015C6834 AS DateTime), CAST(0x00009D49015C6834 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (345, N'jc_assessrehab', 277, 2, NULL, NULL, NULL, CAST(0x00009D49015C6955 AS DateTime), CAST(0x00009D49015C6955 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (346, N'gs_comments', 276, 2, NULL, NULL, NULL, CAST(0x00009D49015C6967 AS DateTime), CAST(0x00009D49015C6967 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (347, N'gs_antithrombotic1dose', 208, 2, N'\d+\.?\d*', NULL, NULL, CAST(0x00009D49015C6DA7 AS DateTime), CAST(0x00009D49015C6DA7 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (348, N'gs_discdatetime_precision', 348, 2, NULL, NULL, NULL, CAST(0x00009D49015C6CE5 AS DateTime), CAST(0x00009D49015C6CE5 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (349, N'jc_admitdate_precision', 349, 2, NULL, NULL, NULL, CAST(0x00009D49015C6CE5 AS DateTime), CAST(0x00009D49015C6CE5 AS DateTime))
+
+
+SET IDENTITY_INSERT [dbo].[AlienField] OFF
+
+SET IDENTITY_INSERT [dbo].[EurekaValue] ON
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (1, 108, N'5', N'3-Bilateral hemianopia (blind including cortical blindness)', NULL, NULL, CAST(0x00009D49015C5D43 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (2, 108, N'3', N'1-Partial hemianopia', NULL, NULL, CAST(0x00009D49015C5D42 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (3, 101, N'4', N'2-Some effort against gravity', NULL, NULL, CAST(0x00009D49015C5D7E AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (4, 108, N'4', N'2-Complete hemianopia', NULL, NULL, CAST(0x00009D49015C5D42 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (5, 101, N'3', N'1-Drift', NULL, NULL, CAST(0x00009D49015C5D7E AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (6, 111, N'9', N'ND or unknown', NULL, NULL, CAST(0x00009D49015C5B8D AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (7, 304, N'7', N'Unknown', NULL, NULL, CAST(0x00009D49015C6753 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (8, 111, N'2', N'Private transport/taxi/other from home/scene', NULL, NULL, CAST(0x00009D49015C5B8C AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (9, 111, N'3', N'Transfer from other hospital', NULL, NULL, CAST(0x00009D49015C5B8C AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (10, 112, N'3', N'Imaging suite prior to ED', NULL, NULL, CAST(0x00009D49015C5BA9 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (11, 112, N'4', N'ND or Cannot be determined', NULL, NULL, CAST(0x00009D49015C5BAA AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (12, 112, N'1', N'Emergency Department/Urgent Care', NULL, NULL, CAST(0x00009D49015C5BA8 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (13, 112, N'2', N'Direct Admit or direct to floor', NULL, NULL, CAST(0x00009D49015C5BA8 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (14, 110, N'2', N'No', NULL, NULL, CAST(0x00009D49015C5B9B AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (15, 304, N'6', N'Other', NULL, NULL, CAST(0x00009D49015C6753 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (16, 101, N'2', N'0-Normal (extends arms 90 (or 45) degrees for 10 seconds without drift)', NULL, NULL, CAST(0x00009D49015C5D7D AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (17, 110, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C5B9A AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (18, 100, N'6', N'4-No movement', NULL, NULL, CAST(0x00009D49015C5D61 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (19, 111, N'1', N'EMS from home/scene', NULL, NULL, CAST(0x00009D49015C5B8B AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (20, 310, N'2', N'No', NULL, NULL, CAST(0x00009D49015C6B10 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (21, 100, N'7', N'U-Untestable (Joint fused or limb amputated)', NULL, NULL, CAST(0x00009D49015C5D62 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (22, 103, N'3', N'1-Drift', NULL, NULL, CAST(0x00009D49015C5D8E AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (23, 105, N'2', N'0-Answers both correctly', NULL, NULL, CAST(0x00009D49015C5D16 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (24, 309, N'3', N'MM/DD/YYYY', NULL, NULL, CAST(0x00009D49015C6B87 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (25, 103, N'2', N'0-Normal (extends arms 90 (or 45) degrees for 10 seconds without drift)', NULL, NULL, CAST(0x00009D49015C5D8D AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (26, 105, N'3', N'1-Answers one correctly', NULL, NULL, CAST(0x00009D49015C5D16 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (27, 102, N'4', N'2-Present in two limbs', NULL, NULL, CAST(0x00009D49015C5D9F AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (28, 102, N'5', N'U-Untestable (Joint fused or limb amputated)', NULL, NULL, CAST(0x00009D49015C5DA0 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (29, 103, N'4', N'2-Some effort against gravity', NULL, NULL, CAST(0x00009D49015C5D8F AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (30, 103, N'6', N'4-No movement', NULL, NULL, CAST(0x00009D49015C5D90 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (31, 309, N'0', N'Unknown', NULL, NULL, CAST(0x00009D49015C6B87 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (32, 103, N'7', N'U-Untestable (Joint fused or limb amputated)', NULL, NULL, CAST(0x00009D49015C5D91 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (33, 104, N'2', N'0-Obeys both correctly', NULL, NULL, CAST(0x00009D49015C5D25 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (34, 104, N'4', N'2-Both incorrect', NULL, NULL, CAST(0x00009D49015C5D26 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (35, 103, N'5', N'3-No effort against gravity', NULL, NULL, CAST(0x00009D49015C5D8F AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (36, 104, N'3', N'1-Obeys one correctly', NULL, NULL, CAST(0x00009D49015C5D25 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (37, 105, N'4', N'2-Both incorrect', NULL, NULL, CAST(0x00009D49015C5D17 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (38, 101, N'6', N'4-No movement', NULL, NULL, CAST(0x00009D49015C5D80 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (39, 107, N'3', N'1-Minor paralysis (flattened nasolabial fold, asymmetry on smiling)', NULL, NULL, CAST(0x00009D49015C5D50 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (40, 107, N'2', N'0-Normal symmetrical movement', NULL, NULL, CAST(0x00009D49015C5D4F AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (41, 107, N'4', N'2-Partial paralysis (total or near paralysis of lower face)', NULL, NULL, CAST(0x00009D49015C5D51 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (42, 108, N'2', N'0-No visual field loss', NULL, NULL, CAST(0x00009D49015C5D41 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (43, 101, N'5', N'3-No effort against gravity', NULL, NULL, CAST(0x00009D49015C5D7F AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (44, 107, N'5', N'3-Complete paralysis of one or both sides', NULL, NULL, CAST(0x00009D49015C5D51 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (45, 101, N'7', N'U-Untestable (Joint fused or limb amputated)', NULL, NULL, CAST(0x00009D49015C5D80 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (46, 309, N'5', N'MM/DD/YYYY HH24:MM', NULL, NULL, CAST(0x00009D49015C6B86 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (47, 102, N'2', N'0-No ataxia', NULL, NULL, CAST(0x00009D49015C5D9D AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (48, 102, N'3', N'1-Present in one limb', NULL, NULL, CAST(0x00009D49015C5D9E AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (49, 310, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C6B0F AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (50, 106, N'4', N'2-Forced deviation', NULL, NULL, CAST(0x00009D49015C5D34 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (51, 106, N'3', N'1-Partial gaze palsy', NULL, NULL, CAST(0x00009D49015C5D33 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (52, 106, N'2', N'0-Normal', NULL, NULL, CAST(0x00009D49015C5D32 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (53, 302, N'5', N'warfarin (Coumadin)', NULL, NULL, CAST(0x00009D49015C673B AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (54, 302, N'9', N'full dose LMW heparin', NULL, NULL, CAST(0x00009D49015C673A AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (55, 302, N'12', N'Fondaparinux (Arixtra)', NULL, NULL, CAST(0x00009D49015C673B AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (56, 302, N'See Appendix 2', N'', NULL, NULL, CAST(0x00009D49015C673C AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (57, 302, N'13', N'Other Anticoagulant', NULL, NULL, CAST(0x00009D49015C673C AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (58, 302, N'11', N'Other Antiplatelet', NULL, NULL, CAST(0x00009D49015C6739 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (59, 137, N'5', N'MM/DD/YYYY HH24:MM', NULL, NULL, CAST(0x00009D49015C5EEB AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (60, 136, N'2', N'No', NULL, NULL, CAST(0x00009D49015C5EFD AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (61, 302, N'8', N'Unfractionated heparin IV', NULL, NULL, CAST(0x00009D49015C6739 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (62, 136, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C5EFC AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (63, 303, N'11', N'Other Antiplatelet', NULL, NULL, CAST(0x00009D49015C6767 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (64, 303, N'7', N'ticlopidine (Ticlid)', NULL, NULL, CAST(0x00009D49015C6766 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (65, 303, N'8', N'Unfractionated heparin IV', NULL, NULL, CAST(0x00009D49015C6767 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (66, 123, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C5C39 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (67, 123, N'2', N'No/UTD', NULL, NULL, CAST(0x00009D49015C5C3A AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (68, 303, N'4', N'ASA/dipyridamole (Aggrenox)', NULL, NULL, CAST(0x00009D49015C6765 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (69, 303, N'3', N'aspirin   ', NULL, NULL, CAST(0x00009D49015C6764 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (70, 303, N'6', N'clopidogrel (Plavix)', NULL, NULL, CAST(0x00009D49015C6766 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (71, 126, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C5BEA AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (72, 126, N'2', N'No', NULL, NULL, CAST(0x00009D49015C5BEA AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (73, 137, N'3', N'MM/DD/YYYY', NULL, NULL, CAST(0x00009D49015C5EEB AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (74, 145, N'2', N'Day 3 or after', NULL, NULL, CAST(0x00009D49015C6066 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (75, 145, N'3', N'Timing unclear', NULL, NULL, CAST(0x00009D49015C6067 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (76, 145, N'1', N'Day 1 or 2', NULL, NULL, CAST(0x00009D49015C6066 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (77, 301, N'13', N'Other Anticoagulant', NULL, NULL, CAST(0x00009D49015C670F AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (78, 301, N'12', N'Fondaparinux (Arixtra)', NULL, NULL, CAST(0x00009D49015C670E AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (79, 147, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C5FD1 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (80, 147, N'2', N'No', NULL, NULL, CAST(0x00009D49015C5FD2 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (81, 301, N'9', N'full dose LMW heparin', NULL, NULL, CAST(0x00009D49015C670D AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (82, 145, N'4', N'Not Documented/UTD', NULL, NULL, CAST(0x00009D49015C6068 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (83, 301, N'5', N'warfarin (Coumadin)', NULL, NULL, CAST(0x00009D49015C670E AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (84, 302, N'4', N'ASA/dipyridamole (Aggrenox)', NULL, NULL, CAST(0x00009D49015C6737 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (85, 302, N'3', N'aspirin   ', NULL, NULL, CAST(0x00009D49015C6736 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (86, 302, N'6', N'clopidogrel (Plavix)', NULL, NULL, CAST(0x00009D49015C6738 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (87, 137, N'0', N'Unknown', NULL, NULL, CAST(0x00009D49015C5EEC AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (88, 302, N'7', N'ticlopidine (Ticlid)', NULL, NULL, CAST(0x00009D49015C6738 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (89, 143, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C6021 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (90, 143, N'2', N'No', NULL, NULL, CAST(0x00009D49015C6022 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (91, 301, N'See Appendix 2', N'', NULL, NULL, CAST(0x00009D49015C670F AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (92, 142, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C6033 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (93, 142, N'2', N'No', NULL, NULL, CAST(0x00009D49015C6033 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (94, 303, N'9', N'full dose LMW heparin', NULL, NULL, CAST(0x00009D49015C6768 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (95, 118, N'3', N'Chronic health care facility', NULL, NULL, CAST(0x00009D49015C5B7D AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (96, 118, N'5', N'Outpatient healthcare setting', NULL, NULL, CAST(0x00009D49015C5B7D AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (97, 118, N'2', N'Another acute care facility', NULL, NULL, CAST(0x00009D49015C5B7C AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (98, 117, N'2', N'No', NULL, NULL, CAST(0x00009D49015C5B4D AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (99, 118, N'1', N'Not in a healthcare setting', NULL, NULL, CAST(0x00009D49015C5B7B AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (100, 119, N'1', N'Clinic', NULL, NULL, CAST(0x00009D49015C5B64 AS DateTime), NULL)
+
+print 'Processed 100 total records'
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (101, 301, N'8', N'Unfractionated heparin IV', NULL, NULL, CAST(0x00009D49015C670C AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (102, 303, N'See Appendix 2', N'', NULL, NULL, CAST(0x00009D49015C676A AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (103, 118, N'4', N'Stroke occurred while patient was an inpatient in your hospital', NULL, NULL, CAST(0x00009D49015C5B7E AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (104, 118, N'9', N'ND or Cannot be determined', NULL, NULL, CAST(0x00009D49015C5B7E AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (105, 114, N'3', N'N/A', NULL, NULL, CAST(0x00009D49015C5BB8 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (106, 304, N'4', N'3 times a day', NULL, NULL, CAST(0x00009D49015C6752 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (107, 114, N'2', N'No/ND', NULL, NULL, CAST(0x00009D49015C5BB8 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (108, 304, N'5', N'4 times a day', NULL, NULL, CAST(0x00009D49015C6752 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (109, 114, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C5BB7 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (110, 304, N'2', N'Every day', NULL, NULL, CAST(0x00009D49015C6750 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (111, 117, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C5B4C AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (112, 304, N'3', N'2 times a day', NULL, NULL, CAST(0x00009D49015C6751 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (113, 115, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C4FB1 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (114, 115, N'2', N'No', NULL, NULL, CAST(0x00009D49015C5B31 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (115, 119, N'2', N'Court/law enforcement', NULL, NULL, CAST(0x00009D49015C5B65 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (116, 120, N'3', N'MM/DD/YYYY', NULL, NULL, CAST(0x00009D49015C5BD0 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (117, 120, N'0', N'Unknown', NULL, NULL, CAST(0x00009D49015C5BD1 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (118, 120, N'5', N'MM/DD/YYYY HH24:MM', NULL, NULL, CAST(0x00009D49015C5BCF AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (119, 119, N'13', N'Transfer from a critical access hospital', NULL, NULL, CAST(0x00009D49015C5B6C AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (120, 303, N'13', N'Other Anticoagulant', NULL, NULL, CAST(0x00009D49015C676A AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (121, 121, N'3', N'Unknown', NULL, NULL, CAST(0x00009D49015C5C2D AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (122, 303, N'5', N'warfarin (Coumadin)', NULL, NULL, CAST(0x00009D49015C6769 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (123, 121, N'2', N'Female', NULL, NULL, CAST(0x00009D49015C5C2D AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (124, 303, N'12', N'Fondaparinux (Arixtra)', NULL, NULL, CAST(0x00009D49015C6769 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (125, 121, N'1', N'Male', NULL, NULL, CAST(0x00009D49015C5C2C AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (126, 119, N'6', N'Transfer from a Skilled Nursing Facility (SNF) or Intermediate Care Facility (ICF)', NULL, NULL, CAST(0x00009D49015C5B67 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (127, 119, N'7', N'Transfer from Ambulatory Surgery Center', NULL, NULL, CAST(0x00009D49015C5B68 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (128, 119, N'5', N'Transfer From a Hospital (Different Facility)', NULL, NULL, CAST(0x00009D49015C5B67 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (129, 119, N'3', N'Emergency room', NULL, NULL, CAST(0x00009D49015C5B65 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (130, 119, N'4', N'Non-Health Care Facility Point of Origin', NULL, NULL, CAST(0x00009D49015C5B66 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (131, 119, N'11', N'Information not available', NULL, NULL, CAST(0x00009D49015C5B6A AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (132, 119, N'12', N'HMO referral', NULL, NULL, CAST(0x00009D49015C5B6B AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (133, 119, N'10', N'Transfer from One Distinct Unit of the Hospital to another Distinct Unit of the Same Hospital Resulting in a Separate Claim to the Payer', NULL, NULL, CAST(0x00009D49015C5B6A AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (134, 119, N'8', N'Transfer from another Health Care Facility', NULL, NULL, CAST(0x00009D49015C5B69 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (135, 119, N'9', N'Transfer from Hospice and is Under a Hospice Plan of Care or Enrolled in a Hospice Program', NULL, NULL, CAST(0x00009D49015C5B69 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (136, 100, N'5', N'3-No effort against gravity', NULL, NULL, CAST(0x00009D49015C5D61 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (137, 332, N'6', N'Native Hawaiian/Pacific Islander', NULL, NULL, CAST(0x00009D49015C698A AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (138, 332, N'5', N'White', NULL, NULL, CAST(0x00009D49015C698A AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (139, 332, N'8', N'UTD', NULL, NULL, CAST(0x00009D49015C698B AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (140, 35, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C61A5 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (141, 35, N'2', N'No/ND', NULL, NULL, CAST(0x00009D49015C61A6 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (142, 332, N'3', N'American Indian/Alaska Native', NULL, NULL, CAST(0x00009D49015C6989 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (143, 41, N'1', N'Checked', NULL, NULL, CAST(0x00009D49015C6174 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (144, 40, N'1', N'Checked', NULL, NULL, CAST(0x00009D49015C6152 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (145, 39, N'1', N'Checked', NULL, NULL, CAST(0x00009D49015C6163 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (146, 332, N'4', N'Asian', NULL, NULL, CAST(0x00009D49015C6989 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (147, 32, N'1', N'Pass', NULL, NULL, CAST(0x00009D49015C60C5 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (148, 32, N'2', N'Fail', NULL, NULL, CAST(0x00009D49015C60C6 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (149, 31, N'3', N'NC', NULL, NULL, CAST(0x00009D49015C60D8 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (150, 31, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C60D7 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (151, 31, N'2', N'No', NULL, NULL, CAST(0x00009D49015C60D8 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (152, 34, N'6', N'No/ND', NULL, NULL, CAST(0x00009D49015C61B7 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (153, 34, N'5', N'NC', NULL, NULL, CAST(0x00009D49015C61B8 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (154, 34, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C61B7 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (155, 32, N'3', N'ND', NULL, NULL, CAST(0x00009D49015C60C7 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (156, 33, N'1', N'Checked', NULL, NULL, CAST(0x00009D49015C6140 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (157, 329, N'5', N'4 – Transfer from a Hospital (Different Facility)', NULL, NULL, CAST(0x00009D49015C69F2 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (158, 329, N'3', N'2 – Clinic', NULL, NULL, CAST(0x00009D49015C69F1 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (159, 329, N'6', N'5 – Transfer from a Skilled Nursing Facility (SNF) of Intermediate Care Facility (ICF)', NULL, NULL, CAST(0x00009D49015C69F3 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (160, 329, N'8', N'7 – Emergency Room', NULL, NULL, CAST(0x00009D49015C69F4 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (161, 329, N'7', N'6 – Transfer from another Health Care Facility', NULL, NULL, CAST(0x00009D49015C69F3 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (162, 66, N'2', N'01 Discharged to home or self care (routine discharge)', NULL, NULL, CAST(0x00009D49015C63CE AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (163, 66, N'3', N'02 Dsch/Trans to a short term general hospital for inpatient care', NULL, NULL, CAST(0x00009D49015C63CF AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (164, 328, N'1', N'Medicare', NULL, NULL, CAST(0x00009D49015C69CF AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (165, 329, N'2', N'1 – Non-Health Care Facility Point of Origin', NULL, NULL, CAST(0x00009D49015C69F1 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (166, 328, N'2', N'Non-Medicare', NULL, NULL, CAST(0x00009D49015C69D0 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (167, 330, N'2', N'No', NULL, NULL, CAST(0x00009D49015C6A19 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (168, 330, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C6A18 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (169, 331, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C6A07 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (170, 331, N'2', N'No', NULL, NULL, CAST(0x00009D49015C6A08 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (171, 43, N'1', N'Checked', NULL, NULL, CAST(0x00009D49015C6185 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (172, 329, N'10', N'9 – Information not Available', NULL, NULL, CAST(0x00009D49015C69F5 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (173, 329, N'9', N'8 – Court/Law Enforcement', NULL, NULL, CAST(0x00009D49015C69F5 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (174, 329, N'12', N'D – Transfer from One Distinct Unit of the Hospital to another Distinct Unit of the Same Hospital Resulting in a Separate Claim to the Payer', NULL, NULL, CAST(0x00009D49015C69F6 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (175, 329, N'14', N'F – Transfer from Hospice and is Under a Hospice Plan of Care or Enrolled in a Hospice Program', NULL, NULL, CAST(0x00009D49015C69F7 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (176, 329, N'13', N'E – Transfer from Ambulatory Surgery Center', NULL, NULL, CAST(0x00009D49015C69F6 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (177, 20, N'2', N' cm', NULL, NULL, CAST(0x00009D49015C6304 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (178, 340, N'2', N'No', NULL, NULL, CAST(0x00009D49015C6ABA AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (179, 20, N'1', N' in', NULL, NULL, CAST(0x00009D49015C6303 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (180, 341, N'2', N'No', NULL, NULL, CAST(0x00009D49015C6ADC AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (181, 341, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C6ADC AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (182, 23, N'5', N'NC', NULL, NULL, CAST(0x00009D49015C60FD AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (183, 339, N'2', N'No', NULL, NULL, CAST(0x00009D49015C6A96 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (184, 23, N'2', N'No/ND', NULL, NULL, CAST(0x00009D49015C60FC AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (185, 340, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C6ABA AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (186, 23, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C60FB AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (187, 346, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C6A83 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (188, 345, N'4', N'4 – Not Documented/UTD', NULL, NULL, CAST(0x00009D49015C6A61 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (189, 346, N'2', N'No', NULL, NULL, CAST(0x00009D49015C6A84 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (190, 347, N'2', N'No', NULL, NULL, CAST(0x00009D49015C6A72 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (191, 347, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C6A72 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (192, 342, N'2', N'No', NULL, NULL, CAST(0x00009D49015C6ACB AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (193, 342, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C6ACB AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (194, 345, N'1', N'1 – Day 0 or 1', NULL, NULL, CAST(0x00009D49015C6A60 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (195, 345, N'3', N'3 – Timing unclear', NULL, NULL, CAST(0x00009D49015C6A61 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (196, 345, N'2', N'2 – Day 2 or after', NULL, NULL, CAST(0x00009D49015C6A60 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (197, 29, N'4', N'Unable to determine', NULL, NULL, CAST(0x00009D49015C608E AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (198, 29, N'5', N'N/A', NULL, NULL, CAST(0x00009D49015C608F AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (199, 29, N'3', N'Symptomatic hemorrhage detected only after patient transfer', NULL, NULL, CAST(0x00009D49015C608D AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (200, 28, N'2', N'No/ND', NULL, NULL, CAST(0x00009D49015C60A1 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (201, 29, N'2', N'Symptomatic hemorrhage detected prior to patient transfer', NULL, NULL, CAST(0x00009D49015C608D AS DateTime), NULL)
+
+print 'Processed 200 total records'
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (202, 30, N'3', N'NC', NULL, NULL, CAST(0x00009D49015C60B3 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (203, 337, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C6A2B AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (204, 30, N'2', N'No/ND', NULL, NULL, CAST(0x00009D49015C60B3 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (205, 337, N'2', N'No', NULL, NULL, CAST(0x00009D49015C6A2B AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (206, 30, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C60B2 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (207, 339, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C6A96 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (208, 25, N'1', N'Checked', NULL, NULL, CAST(0x00009D49015C610F AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (209, 24, N'3', N'ND', NULL, NULL, CAST(0x00009D49015C60EB AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (210, 24, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C60E9 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (211, 24, N'2', N'No', NULL, NULL, CAST(0x00009D49015C60EA AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (212, 338, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C6AA7 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (213, 28, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C60A1 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (214, 27, N'1', N'Checked', NULL, NULL, CAST(0x00009D49015C6120 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (215, 26, N'1', N'Checked', NULL, NULL, CAST(0x00009D49015C6130 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (216, 338, N'2', N'No', NULL, NULL, CAST(0x00009D49015C6AA8 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (217, 95, N'9', N'ND', NULL, NULL, CAST(0x00009D49015C5C98 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (218, 312, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C6B20 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (219, 95, N'3', N'Unable to ambulate ', NULL, NULL, CAST(0x00009D49015C5C97 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (220, 95, N'1', N'Able to ambulate independently (no help from another person) w/ or w/o device', NULL, NULL, CAST(0x00009D49015C5C96 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (221, 95, N'2', N'With assistance (from person)', NULL, NULL, CAST(0x00009D49015C5C97 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (222, 96, N'4', N'ND', NULL, NULL, CAST(0x00009D49015C5CB7 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (223, 97, N'2', N'Ischemic stroke', NULL, NULL, CAST(0x00009D49015C5CA5 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (224, 96, N'3', N'>= 60 minutes', NULL, NULL, CAST(0x00009D49015C5CB7 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (225, 96, N'1', N'Less then 10 minutes', NULL, NULL, CAST(0x00009D49015C5CB6 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (226, 96, N'2', N'10 – 59 minutes ', NULL, NULL, CAST(0x00009D49015C5CB6 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (227, 90, N'2', N'No/ND', NULL, NULL, CAST(0x00009D49015C5CE0 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (228, 313, N'2', N'No', NULL, NULL, CAST(0x00009D49015C6B43 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (229, 90, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C5CE0 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (230, 314, N'2', N'No', NULL, NULL, CAST(0x00009D49015C6B32 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (231, 314, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C6B32 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (232, 313, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C6B43 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (233, 312, N'2', N'No', NULL, NULL, CAST(0x00009D49015C6B21 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (234, 92, N'3', N'ND', NULL, NULL, CAST(0x00009D49015C5CEF AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (235, 92, N'1', N'Actual', NULL, NULL, CAST(0x00009D49015C5CED AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (236, 92, N'2', N'Estimated from record', NULL, NULL, CAST(0x00009D49015C5CEE AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (237, 99, N'4', N'2-Some effort against gravity', NULL, NULL, CAST(0x00009D49015C5D6F AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (238, 99, N'5', N'3-No effort against gravity', NULL, NULL, CAST(0x00009D49015C5D70 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (239, 99, N'3', N'1-Drift', NULL, NULL, CAST(0x00009D49015C5D6F AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (240, 311, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C6AFE AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (241, 99, N'2', N'0-Normal (extends arms 90 (or 45) degrees for 10 seconds without drift)', NULL, NULL, CAST(0x00009D49015C5D6E AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (242, 100, N'3', N'1-Drift', NULL, NULL, CAST(0x00009D49015C5D5F AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (243, 100, N'4', N'2-Some effort against gravity', NULL, NULL, CAST(0x00009D49015C5D60 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (244, 100, N'2', N'0-Normal (extends arms 90 (or 45) degrees for 10 seconds without drift)', NULL, NULL, CAST(0x00009D49015C5D5E AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (245, 99, N'6', N'4-No movement', NULL, NULL, CAST(0x00009D49015C5D71 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (246, 99, N'7', N'U-Untestable (Joint fused or limb amputated)', NULL, NULL, CAST(0x00009D49015C5D71 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (247, 97, N'6', N'Stroke not otherwise specified', NULL, NULL, CAST(0x00009D49015C5CA8 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (248, 97, N'7', N'No stroke related diagnosis', NULL, NULL, CAST(0x00009D49015C5CA9 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (249, 97, N'5', N'Intracerebral Hemorrhage', NULL, NULL, CAST(0x00009D49015C5CA7 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (250, 97, N'3', N'Transient Ischemic Attack (< 24 hours)', NULL, NULL, CAST(0x00009D49015C5CA6 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (251, 97, N'4', N'Subarachnoid Hemorrhage               ', NULL, NULL, CAST(0x00009D49015C5CA7 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (252, 98, N'4', N'2-Not alert, requires repeated stimulation to attend', NULL, NULL, CAST(0x00009D49015C5D09 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (253, 98, N'5', N'3-Coma', NULL, NULL, CAST(0x00009D49015C5D09 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (254, 98, N'3', N'1-Not alert, but arousable with minimal stimulation', NULL, NULL, CAST(0x00009D49015C5D08 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (255, 311, N'2', N'No', NULL, NULL, CAST(0x00009D49015C6AFF AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (256, 98, N'2', N'0-Alert', NULL, NULL, CAST(0x00009D49015C5D07 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (257, 66, N'19', N'64 Dsch/Trans to a nursing facility certified under Medicaid but not certified under Medicare', NULL, NULL, CAST(0x00009D49015C63D9 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (258, 66, N'21', N'65 Dsch/Trans to a psychiatric hospital or psychiatric distinct part unit of a hospital', NULL, NULL, CAST(0x00009D49015C63DA AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (259, 66, N'16', N'63 Dsch/Trans to a Medicare certified long term care hospital (LTCH)', NULL, NULL, CAST(0x00009D49015C63D9 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (260, 66, N'14', N'61 Dsch/Trans to hospital-based Medicare approved swing bed', NULL, NULL, CAST(0x00009D49015C63D7 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (261, 66, N'15', N'62 Dsch/Trans to an inpatient rehabilitation facility (IRF) including rehabilitation distinct part units of a hospital', NULL, NULL, CAST(0x00009D49015C63D8 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (262, 67, N'2', N'No', NULL, NULL, CAST(0x00009D49015C63BD AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (263, 323, N'0', N'Unknown', NULL, NULL, CAST(0x00009D49015C6BDF AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (264, 67, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C63BC AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (265, 66, N'22', N'66 Discharged/transferred to a Critical Access Hospital (CAH) ', NULL, NULL, CAST(0x00009D49015C63DA AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (266, 66, N'6', N'70', NULL, NULL, CAST(0x00009D49015C63DB AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (267, 66, N'7', N'6', NULL, NULL, CAST(0x00009D49015C63D2 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (268, 66, N'8', N'07 Left against medical advice or discontinued care', NULL, NULL, CAST(0x00009D49015C63D4 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (269, 66, N'23', N'05 Discharged/transferred to a Designated Cancer Center or Children''s Hospital', NULL, NULL, CAST(0x00009D49015C63D2 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (270, 66, N'4', N'3', NULL, NULL, CAST(0x00009D49015C63CF AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (271, 66, N'5', N'4', NULL, NULL, CAST(0x00009D49015C63D1 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (272, 66, N'12', N'50 Hospice – home', NULL, NULL, CAST(0x00009D49015C63D6 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (273, 66, N'13', N'51-Hospice – medical facility (certified) providing hospice level of care', NULL, NULL, CAST(0x00009D49015C63D7 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (274, 66, N'20', N'43 Dsch/Trans to a federal health care facility', NULL, NULL, CAST(0x00009D49015C63D5 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (275, 66, N'10', N'20 Expired', NULL, NULL, CAST(0x00009D49015C63D4 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (276, 66, N'24', N'21 Dsch/Trans to court/law enforcement', NULL, NULL, CAST(0x00009D49015C63D5 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (277, 317, N'5', N'MM/DD/YYYY HH24:MM', NULL, NULL, CAST(0x00009D49015C6C13 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (278, 315, N'0', N'Unknown', NULL, NULL, CAST(0x00009D49015C6BAB AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (279, 317, N'3', N'MM/DD/YYYY', NULL, NULL, CAST(0x00009D49015C6C13 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (280, 318, N'5', N'MM/DD/YYYY HH24:MM', NULL, NULL, CAST(0x00009D49015C6C37 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (281, 317, N'0', N'Unknown', NULL, NULL, CAST(0x00009D49015C6C14 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (282, 88, N'2', N'No', NULL, NULL, CAST(0x00009D49015C5CD2 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (283, 88, N'3', N'ND', NULL, NULL, CAST(0x00009D49015C5CD3 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (284, 88, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C5CD2 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (285, 315, N'3', N'MM/DD/YYYY', NULL, NULL, CAST(0x00009D49015C6BA8 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (286, 315, N'5', N'MM/DD/YYYY HH24:MM', NULL, NULL, CAST(0x00009D49015C6BA8 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (287, 68, N'5', N'ND', NULL, NULL, CAST(0x00009D49015C63EE AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (288, 323, N'3', N'MM/DD/YYYY', NULL, NULL, CAST(0x00009D49015C6BDF AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (289, 68, N'4', N'Unable to ambulate', NULL, NULL, CAST(0x00009D49015C63EE AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (290, 68, N'2', N'Able to ambulate independently (no help from another person) w/ or w/o device', NULL, NULL, CAST(0x00009D49015C63EC AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (291, 68, N'3', N'With assistance (from person)', NULL, NULL, CAST(0x00009D49015C63ED AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (292, 318, N'0', N'Unknown', NULL, NULL, CAST(0x00009D49015C6C38 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (293, 318, N'3', N'MM/DD/YYYY', NULL, NULL, CAST(0x00009D49015C6C37 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (294, 72, N'2', N' cm', NULL, NULL, CAST(0x00009D49015C636A AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (295, 323, N'5', N'MM/DD/YYYY HH24:MM', NULL, NULL, CAST(0x00009D49015C6BDE AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (296, 72, N'1', N' in', NULL, NULL, CAST(0x00009D49015C6369 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (297, 284, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C66AF AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (298, 212, N'100', N'75 mg', NULL, NULL, CAST(0x00009D49015C6E03 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (299, 211, N'703', N'10 mg', NULL, NULL, CAST(0x00009D49015C6E38 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (300, 211, N'701', N'5 mg', NULL, NULL, CAST(0x00009D49015C6E36 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (301, 211, N'702', N'7.5 mg', NULL, NULL, CAST(0x00009D49015C6E37 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (302, 212, N'104', N'300 mg', NULL, NULL, CAST(0x00009D49015C6E05 AS DateTime), NULL)
+
+print 'Processed 300 total records'
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (303, 212, N'105', N'325 mg', NULL, NULL, CAST(0x00009D49015C6E06 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (304, 212, N'103', N'162 mg', NULL, NULL, CAST(0x00009D49015C6E05 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (305, 212, N'101', N'81 mg', NULL, NULL, CAST(0x00009D49015C6E04 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (306, 212, N'102', N'125 mg', NULL, NULL, CAST(0x00009D49015C6E04 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (307, 211, N'700', N'2.5 mg', NULL, NULL, CAST(0x00009D49015C6E36 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (308, 211, N'308', N'Unknown', NULL, NULL, CAST(0x00009D49015C6E31 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (309, 211, N'400', N'75 mg', NULL, NULL, CAST(0x00009D49015C6E32 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (310, 211, N'307', N'Other', NULL, NULL, CAST(0x00009D49015C6E31 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (311, 211, N'305', N'6 mg', NULL, NULL, CAST(0x00009D49015C6E30 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (312, 211, N'306', N'7.5 mg', NULL, NULL, CAST(0x00009D49015C6E30 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (313, 211, N'501', N'Other', NULL, NULL, CAST(0x00009D49015C6E34 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (314, 211, N'502', N'Unknown', NULL, NULL, CAST(0x00009D49015C6E35 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (315, 211, N'500', N'250 mg', NULL, NULL, CAST(0x00009D49015C6E34 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (316, 211, N'401', N'Other', NULL, NULL, CAST(0x00009D49015C6E33 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (317, 211, N'402', N'Unknown', NULL, NULL, CAST(0x00009D49015C6E33 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (318, 212, N'400', N'75 mg', NULL, NULL, CAST(0x00009D49015C6E0F AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (319, 212, N'401', N'Other', NULL, NULL, CAST(0x00009D49015C6E10 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (320, 212, N'308', N'Unknown', NULL, NULL, CAST(0x00009D49015C6E0F AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (321, 212, N'306', N'7.5 mg', NULL, NULL, CAST(0x00009D49015C6E0D AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (322, 212, N'307', N'Other', NULL, NULL, CAST(0x00009D49015C6E0E AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (323, 212, N'502', N'Unknown', NULL, NULL, CAST(0x00009D49015C6E12 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (324, 212, N'700', N'2.5 mg', NULL, NULL, CAST(0x00009D49015C6E13 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (325, 212, N'501', N'Other', NULL, NULL, CAST(0x00009D49015C6E11 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (326, 212, N'402', N'Unknown', NULL, NULL, CAST(0x00009D49015C6E10 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (327, 212, N'500', N'250 mg', NULL, NULL, CAST(0x00009D49015C6E11 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (328, 212, N'305', N'6 mg', NULL, NULL, CAST(0x00009D49015C6E0D AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (329, 212, N'201', N'Other', NULL, NULL, CAST(0x00009D49015C6E08 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (330, 212, N'202', N'Unknown', NULL, NULL, CAST(0x00009D49015C6E09 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (331, 212, N'200', N'200 mg – 25 mg', NULL, NULL, CAST(0x00009D49015C6E08 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (332, 212, N'106', N'Other', NULL, NULL, CAST(0x00009D49015C6E07 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (333, 212, N'107', N'Unknown', NULL, NULL, CAST(0x00009D49015C6E07 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (334, 212, N'303', N'4 mg', NULL, NULL, CAST(0x00009D49015C6E0C AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (335, 212, N'304', N'5 mg', NULL, NULL, CAST(0x00009D49015C6E0C AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (336, 212, N'302', N'3 mg', NULL, NULL, CAST(0x00009D49015C6E0B AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (337, 212, N'300', N'2 mg', NULL, NULL, CAST(0x00009D49015C6E0A AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (338, 212, N'301', N'2.5 mg', NULL, NULL, CAST(0x00009D49015C6E0A AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (339, 211, N'304', N'5 mg', NULL, NULL, CAST(0x00009D49015C6E2F AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (340, 210, N'307', N'Other', NULL, NULL, CAST(0x00009D49015C6DEA AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (341, 210, N'308', N'Unknown', NULL, NULL, CAST(0x00009D49015C6DEB AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (342, 210, N'306', N'7.5 mg', NULL, NULL, CAST(0x00009D49015C6DEA AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (343, 210, N'304', N'5 mg', NULL, NULL, CAST(0x00009D49015C6DE8 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (344, 210, N'305', N'6 mg', NULL, NULL, CAST(0x00009D49015C6DE9 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (345, 210, N'500', N'250 mg', NULL, NULL, CAST(0x00009D49015C6DED AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (346, 210, N'501', N'Other', NULL, NULL, CAST(0x00009D49015C6DEE AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (347, 210, N'402', N'Unknown', NULL, NULL, CAST(0x00009D49015C6DED AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (348, 210, N'400', N'75 mg', NULL, NULL, CAST(0x00009D49015C6DEC AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (349, 210, N'401', N'Other', NULL, NULL, CAST(0x00009D49015C6DEC AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (350, 210, N'303', N'4 mg', NULL, NULL, CAST(0x00009D49015C6DE8 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (351, 210, N'107', N'Unknown', NULL, NULL, CAST(0x00009D49015C6DE3 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (352, 210, N'200', N'200 mg – 25 mg', NULL, NULL, CAST(0x00009D49015C6DE4 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (353, 210, N'106', N'Other', NULL, NULL, CAST(0x00009D49015C6DE3 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (354, 210, N'104', N'300 mg', NULL, NULL, CAST(0x00009D49015C6DE1 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (355, 210, N'105', N'325 mg', NULL, NULL, CAST(0x00009D49015C6DE2 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (356, 210, N'301', N'2.5 mg', NULL, NULL, CAST(0x00009D49015C6DE6 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (357, 210, N'302', N'3 mg', NULL, NULL, CAST(0x00009D49015C6DE7 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (358, 210, N'300', N'2 mg', NULL, NULL, CAST(0x00009D49015C6DE6 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (359, 210, N'201', N'Other', NULL, NULL, CAST(0x00009D49015C6DE5 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (360, 210, N'202', N'Unknown', NULL, NULL, CAST(0x00009D49015C6DE5 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (361, 211, N'200', N'200 mg – 25 mg', NULL, NULL, CAST(0x00009D49015C6E2B AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (362, 211, N'201', N'Other', NULL, NULL, CAST(0x00009D49015C6E2B AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (363, 211, N'107', N'Unknown', NULL, NULL, CAST(0x00009D49015C6E2A AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (364, 211, N'105', N'325 mg', NULL, NULL, CAST(0x00009D49015C6E29 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (365, 211, N'106', N'Other', NULL, NULL, CAST(0x00009D49015C6E29 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (366, 211, N'302', N'3 mg', NULL, NULL, CAST(0x00009D49015C6E2E AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (367, 211, N'303', N'4 mg', NULL, NULL, CAST(0x00009D49015C6E2E AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (368, 211, N'301', N'2.5 mg', NULL, NULL, CAST(0x00009D49015C6E2D AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (369, 211, N'202', N'Unknown', NULL, NULL, CAST(0x00009D49015C6E2C AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (370, 211, N'300', N'2 mg', NULL, NULL, CAST(0x00009D49015C6E2C AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (371, 211, N'104', N'300 mg', NULL, NULL, CAST(0x00009D49015C6E28 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (372, 210, N'702', N'7.5 mg', NULL, NULL, CAST(0x00009D49015C6DF0 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (373, 210, N'703', N'10 mg', NULL, NULL, CAST(0x00009D49015C6DF1 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (374, 210, N'701', N'5 mg', NULL, NULL, CAST(0x00009D49015C6DF0 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (375, 210, N'502', N'Unknown', NULL, NULL, CAST(0x00009D49015C6DEF AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (376, 210, N'700', N'2.5 mg', NULL, NULL, CAST(0x00009D49015C6DEF AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (377, 211, N'102', N'125 mg', NULL, NULL, CAST(0x00009D49015C6E27 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (378, 211, N'103', N'162 mg', NULL, NULL, CAST(0x00009D49015C6E28 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (379, 211, N'101', N'81 mg', NULL, NULL, CAST(0x00009D49015C6E26 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (380, 284, N'2', N'No/ND', NULL, NULL, CAST(0x00009D49015C66B0 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (381, 211, N'100', N'75 mg', NULL, NULL, CAST(0x00009D49015C6E26 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (382, 212, N'701', N'5 mg', NULL, NULL, CAST(0x00009D49015C6E14 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (383, 241, N'2', N'Commercial', NULL, NULL, CAST(0x00009D49015C7028 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (384, 241, N'3', N'HMO', NULL, NULL, CAST(0x00009D49015C7028 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (385, 241, N'1', N'Blue Cross/Blue Shield', NULL, NULL, CAST(0x00009D49015C7027 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (386, 275, N'2', N'No', NULL, NULL, CAST(0x00009D49015C6945 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (387, 275, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C6944 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (388, 274, N'2', N'No', NULL, NULL, CAST(0x00009D49015C6921 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (389, 274, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C6921 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (390, 241, N'6', N'Other', NULL, NULL, CAST(0x00009D49015C702A AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (391, 241, N'4', N'Tricare (Champus)', NULL, NULL, CAST(0x00009D49015C7029 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (392, 241, N'5', N'Uninsured/Indigent', NULL, NULL, CAST(0x00009D49015C7029 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (393, 238, N'9', N'Urinary tract infection was not documented', NULL, NULL, CAST(0x00009D49015C7231 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (394, 277, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C6956 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (395, 237, N'1', N'Yes, patient had catheter in place on arrival', NULL, NULL, CAST(0x00009D49015C7242 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (396, 236, N'2', N'No', NULL, NULL, CAST(0x00009D49015C721F AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (397, 277, N'2', N'No', NULL, NULL, CAST(0x00009D49015C6956 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (398, 236, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C721E AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (399, 238, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C7230 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (400, 238, N'2', N'No', NULL, NULL, CAST(0x00009D49015C7231 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (401, 237, N'9', N'Unable to determine', NULL, NULL, CAST(0x00009D49015C7244 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (402, 237, N'2', N'Yes, but only after admission', NULL, NULL, CAST(0x00009D49015C7243 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (403, 237, N'3', N'No', NULL, NULL, CAST(0x00009D49015C7243 AS DateTime), NULL)
+
+print 'Processed 400 total records'
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (404, 262, N'3', N'ND', NULL, NULL, CAST(0x00009D49015C686C AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (405, 265, N'3', N'NC', NULL, NULL, CAST(0x00009D49015C68A4 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (406, 262, N'2', N'No', NULL, NULL, CAST(0x00009D49015C686B AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (407, 261, N'0', N'Unknown', NULL, NULL, CAST(0x00009D49015C6C6C AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (408, 262, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C686B AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (409, 265, N'2', N'No/ND', NULL, NULL, CAST(0x00009D49015C68A3 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (410, 265, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C68A3 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (411, 263, N'3', N'NC', NULL, NULL, CAST(0x00009D49015C6859 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (412, 263, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C6858 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (413, 263, N'2', N'No/ND', NULL, NULL, CAST(0x00009D49015C6858 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (414, 261, N'3', N'MM/DD/YYYY', NULL, NULL, CAST(0x00009D49015C6C6C AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (415, 272, N'2', N'No/ND', NULL, NULL, CAST(0x00009D49015C68B7 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (416, 272, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C68B6 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (417, 272, N'3', N'NC', NULL, NULL, CAST(0x00009D49015C68B8 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (418, 273, N'2', N'No', NULL, NULL, CAST(0x00009D49015C6932 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (419, 273, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C6932 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (420, 270, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C6847 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (421, 261, N'5', N'MM/DD/YYYY HH24:MM', NULL, NULL, CAST(0x00009D49015C6C6B AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (422, 270, N'2', N'No', NULL, NULL, CAST(0x00009D49015C6847 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (423, 271, N'2', N'No', NULL, NULL, CAST(0x00009D49015C6836 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (424, 271, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C6835 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (425, 235, N'2', N'No', NULL, NULL, CAST(0x00009D49015C71FB AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (426, 217, N'2', N'No', NULL, NULL, CAST(0x00009D49015C6D75 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (427, 282, N'2', N'No', NULL, NULL, CAST(0x00009D49015C68FF AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (428, 217, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C6D74 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (429, 216, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C6D86 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (430, 216, N'2', N'No', NULL, NULL, CAST(0x00009D49015C6D87 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (431, 280, N'4', N'Not Applicable', NULL, NULL, CAST(0x00009D49015C68EE AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (432, 280, N'2', N'No/ND', NULL, NULL, CAST(0x00009D49015C68ED AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (433, 281, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C6910 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (434, 282, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C68FF AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (435, 281, N'2', N'No', NULL, NULL, CAST(0x00009D49015C6910 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (436, 283, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C67E4 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (437, 214, N'5', N'MM/DD/YYYY HH24:MM', NULL, NULL, CAST(0x00009D49015C6D3D AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (438, 214, N'3', N'MM/DD/YYYY', NULL, NULL, CAST(0x00009D49015C6D3D AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (439, 283, N'3', N'NC', NULL, NULL, CAST(0x00009D49015C67E6 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (440, 212, N'702', N'7.5 mg', NULL, NULL, CAST(0x00009D49015C6E14 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (441, 212, N'703', N'10 mg', NULL, NULL, CAST(0x00009D49015C6E15 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (442, 215, N'2', N'Retrospectively', NULL, NULL, CAST(0x00009D49015C6D62 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (443, 215, N'3', N'Combination', NULL, NULL, CAST(0x00009D49015C6D63 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (444, 215, N'1', N'Concurrently', NULL, NULL, CAST(0x00009D49015C6D61 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (445, 214, N'0', N'Unknown', NULL, NULL, CAST(0x00009D49015C6D3E AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (446, 283, N'2', N'No/ND', NULL, NULL, CAST(0x00009D49015C67E5 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (447, 230, N'2', N'No', NULL, NULL, CAST(0x00009D49015C7255 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (448, 278, N'3', N'NC', NULL, NULL, CAST(0x00009D49015C68DB AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (449, 230, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C7254 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (450, 229, N'7', N'Dead', NULL, NULL, CAST(0x00009D49015C7269 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (451, 279, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C68C8 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (452, 234, N'2', N'No', NULL, NULL, CAST(0x00009D49015C720D AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (453, 235, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C71FA AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (454, 234, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C720D AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (455, 278, N'2', N'No/ND', NULL, NULL, CAST(0x00009D49015C68DA AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (456, 278, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C68DA AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (457, 229, N'6', N'Severe disability; bedridden, incontinent and requiring constant nursing care and attention', NULL, NULL, CAST(0x00009D49015C7268 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (458, 228, N'2', N'No', NULL, NULL, CAST(0x00009D49015C71EA AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (459, 279, N'2', N'No/ND', NULL, NULL, CAST(0x00009D49015C68C9 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (460, 228, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C71E9 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (461, 280, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C68EC AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (462, 279, N'3', N'NC', NULL, NULL, CAST(0x00009D49015C68C9 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (463, 229, N'4', N'Moderate disability; requiring some help, but able to walk without assistance and unable to attend to own bodily needs without assistance', NULL, NULL, CAST(0x00009D49015C7267 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (464, 229, N'5', N'Moderately severe disability, unable to walk without assistance and unable to attend to own bodily needs without assistance', NULL, NULL, CAST(0x00009D49015C7268 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (465, 229, N'3', N'Slight disability; unable to carry out previous activities, but able to look after own affairs without assistance', NULL, NULL, CAST(0x00009D49015C7266 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (466, 229, N'1', N'No symptoms at all', NULL, NULL, CAST(0x00009D49015C7265 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (467, 229, N'2', N'No significant disability despite symptoms; able to carry out all usual duties and activities', NULL, NULL, CAST(0x00009D49015C7266 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (468, 210, N'103', N'162 mg', NULL, NULL, CAST(0x00009D49015C6DE1 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (469, 168, N'1', N'Hemorrhage ', NULL, NULL, CAST(0x00009D49015C5EB6 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (470, 168, N'2', N'No Hemorrhage       ', NULL, NULL, CAST(0x00009D49015C5EB6 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (471, 297, N'5', N'4 times a day', NULL, NULL, CAST(0x00009D49015C67AC AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (472, 167, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C5EC7 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (473, 167, N'2', N'No', NULL, NULL, CAST(0x00009D49015C5EC8 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (474, 169, N'3', N'MM/DD/YYYY', NULL, NULL, CAST(0x00009D49015C5E58 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (475, 169, N'0', N'Unknown', NULL, NULL, CAST(0x00009D49015C5E59 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (476, 169, N'5', N'MM/DD/YYYY HH24:MM', NULL, NULL, CAST(0x00009D49015C5E58 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (477, 168, N'3', N'Not available', NULL, NULL, CAST(0x00009D49015C5EB7 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (478, 297, N'4', N'3 times a day', NULL, NULL, CAST(0x00009D49015C67AB AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (479, 297, N'6', N'Other', NULL, NULL, CAST(0x00009D49015C67AD AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (480, 165, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C5E8D AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (481, 165, N'2', N'No/CD', NULL, NULL, CAST(0x00009D49015C5E8E AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (482, 298, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C67D3 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (483, 163, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C5E3D AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (484, 163, N'2', N'No/ND', NULL, NULL, CAST(0x00009D49015C5E3E AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (485, 166, N'3', N'MM/DD/YYYY', NULL, NULL, CAST(0x00009D49015C5EA7 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (486, 166, N'0', N'Unknown', NULL, NULL, CAST(0x00009D49015C5EA8 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (487, 166, N'5', N'MM/DD/YYYY HH24:MM', NULL, NULL, CAST(0x00009D49015C5EA7 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (488, 165, N'3', N'NC', NULL, NULL, CAST(0x00009D49015C5E8F AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (489, 297, N'7', N'Unknown', NULL, NULL, CAST(0x00009D49015C67AD AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (490, 178, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C6F05 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (491, 178, N'2', N'No', NULL, NULL, CAST(0x00009D49015C6F05 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (492, 296, N'2', N'Every day', NULL, NULL, CAST(0x00009D49015C677C AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (493, 177, N'2', N'No', NULL, NULL, CAST(0x00009D49015C6EDF AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (494, 177, N'9', N'Urinary tract infection was not documented', NULL, NULL, CAST(0x00009D49015C6EE0 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (495, 179, N'9', N'Unable to determine', NULL, NULL, CAST(0x00009D49015C6EF4 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (496, 295, N'See Appendix 2', N'', NULL, NULL, CAST(0x00009D49015C6798 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (497, 179, N'3', N'No', NULL, NULL, CAST(0x00009D49015C6EF4 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (498, 179, N'1', N'Yes, patient had catheter in place on arrival', NULL, NULL, CAST(0x00009D49015C6EF2 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (499, 179, N'2', N'Yes, but only after admission', NULL, NULL, CAST(0x00009D49015C6EF3 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (500, 177, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C6EDF AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (501, 173, N'5', N'MM/DD/YYYY HH24:MM', NULL, NULL, CAST(0x00009D49015C5E72 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (502, 173, N'3', N'MM/DD/YYYY', NULL, NULL, CAST(0x00009D49015C5E72 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (503, 296, N'7', N'Unknown', NULL, NULL, CAST(0x00009D49015C677F AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (504, 297, N'3', N'2 times a day', NULL, NULL, CAST(0x00009D49015C67AB AS DateTime), NULL)
+
+print 'Processed 500 total records'
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (505, 297, N'2', N'Every day', NULL, NULL, CAST(0x00009D49015C67AA AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (506, 296, N'4', N'3 times a day', NULL, NULL, CAST(0x00009D49015C677D AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (507, 296, N'3', N'2 times a day', NULL, NULL, CAST(0x00009D49015C677D AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (508, 296, N'5', N'4 times a day', NULL, NULL, CAST(0x00009D49015C677E AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (509, 173, N'0', N'Unknown', NULL, NULL, CAST(0x00009D49015C5E73 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (510, 296, N'6', N'Other', NULL, NULL, CAST(0x00009D49015C677F AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (511, 298, N'2', N'No', NULL, NULL, CAST(0x00009D49015C67D4 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (512, 155, N'2', N'No/ND', NULL, NULL, CAST(0x00009D49015C5E15 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (513, 300, N'6', N'Other', NULL, NULL, CAST(0x00009D49015C6725 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (514, 155, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C5E14 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (515, 153, N'2', N'No/ND', NULL, NULL, CAST(0x00009D49015C5E09 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (516, 300, N'7', N'Unknown', NULL, NULL, CAST(0x00009D49015C6725 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (517, 157, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C5E22 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (518, 157, N'2', N'No/ND', NULL, NULL, CAST(0x00009D49015C5E22 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (519, 300, N'5', N'4 times a day', NULL, NULL, CAST(0x00009D49015C6724 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (520, 156, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C5E30 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (521, 156, N'2', N'No/ND', NULL, NULL, CAST(0x00009D49015C5E31 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (522, 153, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C5E08 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (523, 301, N'7', N'ticlopidine (Ticlid)', NULL, NULL, CAST(0x00009D49015C670B AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (524, 150, N'5', N'MM/DD/YYYY HH24:MM', NULL, NULL, CAST(0x00009D49015C600E AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (525, 149, N'2', N'No', NULL, NULL, CAST(0x00009D49015C5FE3 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (526, 301, N'11', N'Other Antiplatelet', NULL, NULL, CAST(0x00009D49015C670C AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (527, 149, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C5FE3 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (528, 301, N'4', N'ASA/dipyridamole (Aggrenox)', NULL, NULL, CAST(0x00009D49015C670A AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (529, 301, N'3', N'aspirin   ', NULL, NULL, CAST(0x00009D49015C6709 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (530, 301, N'6', N'clopidogrel (Plavix)', NULL, NULL, CAST(0x00009D49015C670A AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (531, 150, N'3', N'MM/DD/YYYY', NULL, NULL, CAST(0x00009D49015C600E AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (532, 150, N'0', N'Unknown', NULL, NULL, CAST(0x00009D49015C600F AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (533, 161, N'1', N'Able to ambulate independently (no help from another person) w/ or w/o device', NULL, NULL, CAST(0x00009D49015C5DEC AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (534, 161, N'2', N'With assistance (from person)', NULL, NULL, CAST(0x00009D49015C5DED AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (535, 160, N'5', N'U-Intubated or other physical barrier', NULL, NULL, CAST(0x00009D49015C5DD1 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (536, 160, N'3', N'1-Mild to moderate slurring of words', NULL, NULL, CAST(0x00009D49015C5DD0 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (537, 160, N'4', N'2-Near unintelligible or unable to speak', NULL, NULL, CAST(0x00009D49015C5DD1 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (538, 162, N'3', N'1-Inattention or extinction to bilateral stimulation in one modality', NULL, NULL, CAST(0x00009D49015C5DDF AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (539, 162, N'4', N'2-Severe hemi-inattention or hemi-inattention to multiple modalities', NULL, NULL, CAST(0x00009D49015C5DE0 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (540, 162, N'2', N'0-Normal', NULL, NULL, CAST(0x00009D49015C5DDF AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (541, 161, N'3', N'Unable to ambulate', NULL, NULL, CAST(0x00009D49015C5DED AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (542, 161, N'4', N'ND', NULL, NULL, CAST(0x00009D49015C5DEE AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (543, 160, N'2', N'0-Normal articulation', NULL, NULL, CAST(0x00009D49015C5DCF AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (544, 158, N'4', N'2-Severe aphasia', NULL, NULL, CAST(0x00009D49015C5DBE AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (545, 158, N'5', N'3-Mute', NULL, NULL, CAST(0x00009D49015C5DBF AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (546, 158, N'3', N'1-Mild to moderate aphasia', NULL, NULL, CAST(0x00009D49015C5DBE AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (547, 300, N'4', N'3 times a day', NULL, NULL, CAST(0x00009D49015C6723 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (548, 158, N'2', N'0-No aphasia', NULL, NULL, CAST(0x00009D49015C5DBC AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (549, 159, N'4', N'2-Severe to total sensory loss', NULL, NULL, CAST(0x00009D49015C5DAF AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (550, 300, N'2', N'Every day', NULL, NULL, CAST(0x00009D49015C6722 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (551, 159, N'3', N'1-Mild to moderate decrease in sensation', NULL, NULL, CAST(0x00009D49015C5DAE AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (552, 300, N'3', N'2 times a day', NULL, NULL, CAST(0x00009D49015C6723 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (553, 159, N'2', N'0-Normal', NULL, NULL, CAST(0x00009D49015C5DAE AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (554, 180, N'2', N'1', NULL, NULL, CAST(0x00009D49015C6E71 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (555, 208, N'200', N'200 mg – 25 mg', NULL, NULL, CAST(0x00009D49015C6DAD AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (556, 208, N'201', N'Other', NULL, NULL, CAST(0x00009D49015C6DAE AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (557, 208, N'107', N'Unknown', NULL, NULL, CAST(0x00009D49015C6DAC AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (558, 208, N'105', N'325 mg', NULL, NULL, CAST(0x00009D49015C6DAB AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (559, 208, N'106', N'Other', NULL, NULL, CAST(0x00009D49015C6DAC AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (560, 208, N'302', N'3 mg', NULL, NULL, CAST(0x00009D49015C6DB0 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (561, 208, N'303', N'4 mg', NULL, NULL, CAST(0x00009D49015C6DC3 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (562, 208, N'301', N'2.5 mg', NULL, NULL, CAST(0x00009D49015C6DB0 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (563, 208, N'202', N'Unknown', NULL, NULL, CAST(0x00009D49015C6DAE AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (564, 208, N'300', N'2 mg', NULL, NULL, CAST(0x00009D49015C6DAF AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (565, 208, N'104', N'300 mg', NULL, NULL, CAST(0x00009D49015C6DAB AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (566, 205, N'0', N'Unknown', NULL, NULL, CAST(0x00009D49015C6CC3 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (567, 286, N'2', N'Anticoagulant', NULL, NULL, CAST(0x00009D49015C66C3 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (568, 205, N'3', N'MM/DD/YYYY', NULL, NULL, CAST(0x00009D49015C6CC2 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (569, 287, N'1', N'Antiplatelet', NULL, NULL, CAST(0x00009D49015C66E4 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (570, 205, N'5', N'MM/DD/YYYY HH24:MM', NULL, NULL, CAST(0x00009D49015C6CC1 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (571, 208, N'102', N'125 mg', NULL, NULL, CAST(0x00009D49015C6DA9 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (572, 208, N'103', N'162 mg', NULL, NULL, CAST(0x00009D49015C6DAA AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (573, 208, N'101', N'81 mg', NULL, NULL, CAST(0x00009D49015C6DA9 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (574, 286, N'1', N'Antiplatelet', NULL, NULL, CAST(0x00009D49015C66C2 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (575, 208, N'100', N'75 mg', NULL, NULL, CAST(0x00009D49015C6DA8 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (576, 208, N'703', N'10 mg', NULL, NULL, CAST(0x00009D49015C6DCC AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (577, 209, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C6D97 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (578, 208, N'702', N'7.5 mg', NULL, NULL, CAST(0x00009D49015C6DCC AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (579, 208, N'700', N'2.5 mg', NULL, NULL, CAST(0x00009D49015C6DCA AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (580, 208, N'701', N'5 mg', NULL, NULL, CAST(0x00009D49015C6DCB AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (581, 210, N'101', N'81 mg', NULL, NULL, CAST(0x00009D49015C6DDF AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (582, 210, N'102', N'125 mg', NULL, NULL, CAST(0x00009D49015C6DDF AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (583, 210, N'100', N'75 mg', NULL, NULL, CAST(0x00009D49015C6DDE AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (584, 209, N'2', N'No', NULL, NULL, CAST(0x00009D49015C6D98 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (585, 284, N'3', N'NC', NULL, NULL, CAST(0x00009D49015C66B1 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (586, 208, N'502', N'Unknown', NULL, NULL, CAST(0x00009D49015C6DCA AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (587, 208, N'307', N'Other', NULL, NULL, CAST(0x00009D49015C6DC5 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (588, 208, N'308', N'Unknown', NULL, NULL, CAST(0x00009D49015C6DC6 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (589, 208, N'306', N'7.5 mg', NULL, NULL, CAST(0x00009D49015C6DC5 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (590, 208, N'304', N'5 mg', NULL, NULL, CAST(0x00009D49015C6DC4 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (591, 208, N'305', N'6 mg', NULL, NULL, CAST(0x00009D49015C6DC4 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (592, 208, N'500', N'250 mg', NULL, NULL, CAST(0x00009D49015C6DC9 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (593, 208, N'501', N'Other', NULL, NULL, CAST(0x00009D49015C6DC9 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (594, 208, N'402', N'Unknown', NULL, NULL, CAST(0x00009D49015C6DC8 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (595, 208, N'400', N'75 mg', NULL, NULL, CAST(0x00009D49015C6DC7 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (596, 208, N'401', N'Other', NULL, NULL, CAST(0x00009D49015C6DC7 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (597, 287, N'2', N'Anticoagulant', NULL, NULL, CAST(0x00009D49015C66E5 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (598, 184, N'3', N'2', NULL, NULL, CAST(0x00009D49015C6E98 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (599, 184, N'4', N'3', NULL, NULL, CAST(0x00009D49015C6E98 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (600, 184, N'2', N'1', NULL, NULL, CAST(0x00009D49015C6E97 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (601, 295, N'5', N'warfarin (Coumadin)', NULL, NULL, CAST(0x00009D49015C6796 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (602, 295, N'9', N'full dose LMW heparin', NULL, NULL, CAST(0x00009D49015C6796 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (603, 295, N'11', N'Other Antiplatelet', NULL, NULL, CAST(0x00009D49015C6794 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (604, 295, N'7', N'ticlopidine (Ticlid)', NULL, NULL, CAST(0x00009D49015C6794 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (605, 295, N'8', N'Unfractionated heparin IV', NULL, NULL, CAST(0x00009D49015C6795 AS DateTime), NULL)
+
+print 'Processed 600 total records'
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (606, 184, N'5', N'4', NULL, NULL, CAST(0x00009D49015C6E99 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (607, 184, N'6', N'5', NULL, NULL, CAST(0x00009D49015C6E9A AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (608, 182, N'7', N'6', NULL, NULL, CAST(0x00009D49015C6E87 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (609, 295, N'13', N'Other Anticoagulant', NULL, NULL, CAST(0x00009D49015C6798 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (610, 295, N'12', N'Fondaparinux (Arixtra)', NULL, NULL, CAST(0x00009D49015C6797 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (611, 180, N'5', N'4', NULL, NULL, CAST(0x00009D49015C6E72 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (612, 180, N'3', N'2', NULL, NULL, CAST(0x00009D49015C6E71 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (613, 180, N'4', N'3', NULL, NULL, CAST(0x00009D49015C6E72 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (614, 182, N'5', N'4', NULL, NULL, CAST(0x00009D49015C6E85 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (615, 182, N'6', N'5', NULL, NULL, CAST(0x00009D49015C6E86 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (616, 182, N'4', N'3', NULL, NULL, CAST(0x00009D49015C6E85 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (617, 182, N'2', N'1', NULL, NULL, CAST(0x00009D49015C6E84 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (618, 182, N'3', N'2', NULL, NULL, CAST(0x00009D49015C6E84 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (619, 200, N'5', N'MM/DD/YYYY HH24:MM', NULL, NULL, CAST(0x00009D49015C6D1B AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (620, 200, N'3', N'MM/DD/YYYY', NULL, NULL, CAST(0x00009D49015C6D1B AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (621, 288, N'2', N'Anticoagulant', NULL, NULL, CAST(0x00009D49015C66D4 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (622, 197, N'3', N'MM/DD/YYYY', NULL, NULL, CAST(0x00009D49015C6CE7 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (623, 197, N'0', N'Unknown', NULL, NULL, CAST(0x00009D49015C6CE7 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (624, 202, N'3', N'MM/DD/YYYY', NULL, NULL, CAST(0x00009D49015C6C8E AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (625, 202, N'0', N'Unknown', NULL, NULL, CAST(0x00009D49015C6C8E AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (626, 202, N'5', N'MM/DD/YYYY HH24:MM', NULL, NULL, CAST(0x00009D49015C6C8D AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (627, 200, N'0', N'Unknown', NULL, NULL, CAST(0x00009D49015C6D1C AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (628, 288, N'1', N'Antiplatelet', NULL, NULL, CAST(0x00009D49015C66D3 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (629, 197, N'5', N'MM/DD/YYYY HH24:MM', NULL, NULL, CAST(0x00009D49015C6CE6 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (630, 295, N'6', N'clopidogrel (Plavix)', NULL, NULL, CAST(0x00009D49015C6792 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (631, 295, N'4', N'ASA/dipyridamole (Aggrenox)', NULL, NULL, CAST(0x00009D49015C6791 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (632, 187, N'3', N'Other', NULL, NULL, CAST(0x00009D49015C6F85 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (633, 187, N'1', N'Primary', NULL, NULL, CAST(0x00009D49015C6F84 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (634, 187, N'2', N'Comprehensive', NULL, NULL, CAST(0x00009D49015C6F84 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (635, 294, N'2', N'Anticoagulant', NULL, NULL, CAST(0x00009D49015C66F7 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (636, 294, N'1', N'Antiplatelet', NULL, NULL, CAST(0x00009D49015C66F7 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (637, 191, N'2', N'No', NULL, NULL, CAST(0x00009D49015C6F3C AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (638, 295, N'3', N'aspirin   ', NULL, NULL, CAST(0x00009D49015C6790 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (639, 191, N'1', N'Yes', NULL, NULL, CAST(0x00009D49015C6F3B AS DateTime), NULL)
+
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (640, 348, N'0', N'None', NULL, NULL, CAST(0x00009D49015C6BA8 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (641, 348, N'3', N'MM/DD/YYYY', NULL, NULL, CAST(0x00009D49015C6BA8 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (642, 348, N'5', N'MM/DD/YYYY HH24:MM', NULL, NULL, CAST(0x00009D49015C6BA8 AS DateTime), NULL)
+
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (643, 349, N'0', N'None', NULL, NULL, CAST(0x00009D49015C6BA8 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (644, 349, N'3', N'MM/DD/YYYY', NULL, NULL, CAST(0x00009D49015C6BA8 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (645, 349, N'5', N'MM/DD/YYYY HH24:MM', NULL, NULL, CAST(0x00009D49015C6BA8 AS DateTime), NULL)
+
+-- multivalue fields
+
+--INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (652, 353, N'1', N'Yes', NULL, NULL, CAST(0x00009D7B015AC5B9 AS DateTime), NULL)
+--INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (653, 353, N'2', N'No', NULL, NULL, CAST(0x00009D7B015AC5B9 AS DateTime), NULL)
+--INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (655, 354, N'2', N'No', NULL, NULL, CAST(0x00009D7B015B2B12 AS DateTime), NULL)
+--INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (656, 139, N'4', N'Increasedriskofbleedingduetocomorbidconditions(seecodinginstructions)', NULL, NULL, CAST(0x00009D7C0005F0BF AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (657, 139, N'11', N'IVorIAtPAgivenatoutsidehospital', NULL, NULL, CAST(0x00009D7C0005F0C0 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (658, 139, N'10', N'Care-teamunabletodetermineeligibility', NULL, NULL, CAST(0x00009D7C0005F0BE AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (659, 139, N'2', N'Glucose<50or>400mg/dl', NULL, NULL, CAST(0x00009D7C0005F0BF AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (660, 139, N'3', N'Leftheartthrombus', NULL, NULL, CAST(0x00009D7C0005F0C0 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (661, 139, N'9', N'Pt./Familyrefused', NULL, NULL, CAST(0x00009D7C0005F0C2 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (662, 139, N'13', N'Rapidimprovement', NULL, NULL, CAST(0x00009D7C0005F0C3 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (663, 139, N'8', N'Lifeexpectancy<1yearorsevereco-morbidillnessorCMOonadmission', NULL, NULL, CAST(0x00009D7C0005F0C1 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (664, 139, N'5', N'Pregnancy', NULL, NULL, CAST(0x00009D7C0005F0C2 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (665, 140, N'4', N'Recentintracranialorspinalsurgery,headtrauma,orstroke(<3mo.)', NULL, NULL, CAST(0x00009D7C0005F0AE AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (666, 140, N'5', N'Historyofintracranialhemorrhageorbrainaneurysmorvascularmalformationorbraintumor', NULL, NULL, CAST(0x00009D7C0005F0AE AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (667, 140, N'2', N'Seizureatonset', NULL, NULL, CAST(0x00009D7C0005F0AD AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (668, 140, N'3', N'Recentsurgery/trauma(<15days)', NULL, NULL, CAST(0x00009D7C0005F0AD AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (669, 140, N'6', N'Activeinternalbleeding(<22days)', NULL, NULL, CAST(0x00009D7C0005F0AF AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (670, 140, N'9', N'CTfindings(ICH,SAH,ormajorinfarctsigns)', NULL, NULL, CAST(0x00009D7C0005F0B1 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (671, 139, N'6', N'Advancedage', NULL, NULL, CAST(0x00009D7C0005F0BD AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (672, 140, N'7', N'Platelets<100,000,PTT>40secafterheparinuse,orPT>15orINR>1.7,orknownbleedingdiathesis', NULL, NULL, CAST(0x00009D7C0005F0B0 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (673, 140, N'8', N'Suspicionofsubarachnoidhemorrhage', NULL, NULL, CAST(0x00009D7C0005F0B0 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (674, 131, N'6', N'Advancedage', NULL, NULL, CAST(0x00009D7C0005F0E3 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (675, 131, N'10', N'Care-teamunabletodetermineeligibility', NULL, NULL, CAST(0x00009D7C0005F0E4 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (676, 132, N'8', N'Suspicionofsubarachnoidhemorrhage', NULL, NULL, CAST(0x00009D7C0005F0D5 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (677, 132, N'9', N'CTfindings(ICH,SAH,ormajorinfarctsigns)', NULL, NULL, CAST(0x00009D7C0005F0D7 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (678, 131, N'2', N'Glucose<50or>400mg/dl', NULL, NULL, CAST(0x00009D7C0005F0E5 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (679, 131, N'3', N'Leftheartthrombus', NULL, NULL, CAST(0x00009D7C0005F0E6 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (680, 131, N'8', N'Lifeexpectancy<1yearorsevereco-morbidillnessorCMOonadmission', NULL, NULL, CAST(0x00009D7C0005F0E7 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (681, 131, N'4', N'Increasedriskofbleedingduetocomorbidconditions(seecodinginstructions)', NULL, NULL, CAST(0x00009D7C0005F0E5 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (682, 131, N'11', N'IVorIAtPAgivenatoutsidehospital', NULL, NULL, CAST(0x00009D7C0005F0E6 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (683, 132, N'1', N'SBP>185orDBP>110mmHgdespitetreatment', NULL, NULL, CAST(0x00009D7C0005F0D1 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (684, 132, N'2', N'Seizureatonset', NULL, NULL, CAST(0x00009D7C0005F0D1 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (685, 139, N'12', N'Strokeseveritytoomild', NULL, NULL, CAST(0x00009D7C0005F0C4 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (686, 139, N'1', N'Strokeseverity–Toosevere(e.g.,NIHSS>22)', NULL, NULL, CAST(0x00009D7C0005F0C4 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (687, 132, N'3', N'Recentsurgery/trauma(<15days)', NULL, NULL, CAST(0x00009D7C0005F0D2 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (688, 132, N'6', N'Activeinternalbleeding(<22days)', NULL, NULL, CAST(0x00009D7C0005F0D4 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (689, 132, N'7', N'Platelets<100,000,PTT>40secafterheparinuse,orPT>15orINR>1.7,orknownbleedingdiathesis', NULL, NULL, CAST(0x00009D7C0005F0D4 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (690, 132, N'4', N'Recentintracranialorspinalsurgery,headtrauma,orstroke(<3mo.)', NULL, NULL, CAST(0x00009D7C0005F0D2 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (691, 132, N'5', N'Historyofintracranialhemorrhageorbrainaneurysmorvascularmalformationorbraintumor', NULL, NULL, CAST(0x00009D7C0005F0D3 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (692, 140, N'1', N'SBP>185orDBP>110mmHgdespitetreatment', NULL, NULL, CAST(0x00009D7C0005F0AC AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (693, 125, N'5', N'NativeHawaiian/PacificIslander', NULL, NULL, CAST(0x00009D7C0005EDF1 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (694, 125, N'6', N'UTD', NULL, NULL, CAST(0x00009D7C0005EDF2 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (695, 125, N'3', N'Asian', NULL, NULL, CAST(0x00009D7C0005EDF0 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (696, 125, N'4', N'AmericanIndian/AlaskaNative', NULL, NULL, CAST(0x00009D7C0005EDF1 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (697, 125, N'7', N'Other', NULL, NULL, CAST(0x00009D7C0005EDF2 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (698, 109, N'2', N'Private/VA/Champus/OtherInsurance', NULL, NULL, CAST(0x00009D7C0005EE0D AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (699, 109, N'3', N'SelfPay/NoInsurance', NULL, NULL, CAST(0x00009D7C0005EE0D AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (700, 109, N'1', N'Medicare', NULL, NULL, CAST(0x00009D7C0005EE0C AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (701, 109, N'5', N'Medicaid', NULL, NULL, CAST(0x00009D7C0005EE0C AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (702, 128, N'3', N'StrokeConsult', NULL, NULL, CAST(0x00009D7C0005ED9F AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (703, 128, N'4', N'NoStrokeConsult', NULL, NULL, CAST(0x00009D7C0005EDA0 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (704, 128, N'1', N'NeuroAdmission', NULL, NULL, CAST(0x00009D7C0005ED9D AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (705, 128, N'2', N'OtherServiceAdmission', NULL, NULL, CAST(0x00009D7C0005ED9F AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (706, 128, N'5', N'InStrokeUnit', NULL, NULL, CAST(0x00009D7C0005EDA0 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (707, 125, N'1', N'White', NULL, NULL, CAST(0x00009D7C0005EDEF AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (708, 125, N'2', N'BlackorAfricanAmerican', NULL, NULL, CAST(0x00009D7C0005EDEF AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (709, 128, N'6', N'NotinStrokeUnit', NULL, NULL, CAST(0x00009D7C0005EDA1 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (710, 128, N'7', N'UnabletoDetermine', NULL, NULL, CAST(0x00009D7C0005EDA1 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (711, 94, N'5', N'CarotidStenosis', NULL, NULL, CAST(0x00009D7C0005EE21 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (712, 94, N'10', N'Dyslipidemia', NULL, NULL, CAST(0x00009D7C0005EE21 AS DateTime), NULL)
+
+print 'Processed 700 total records'
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (713, 94, N'7', N'', NULL, NULL, CAST(0x00009D7C0005EE20 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (714, 94, N'9', N'Smoker', NULL, NULL, CAST(0x00009D7C0005EE20 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (715, 94, N'15', N'PreviousStroke', NULL, NULL, CAST(0x00009D7C0005EE22 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (716, 89, N'2', N'AlteredLevelofConsciousness', NULL, NULL, CAST(0x00009D7C0005EE6C AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (717, 89, N'3', N'Aphasia', NULL, NULL, CAST(0x00009D7C0005EE6D AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (718, 94, N'2', N'Prostheticheartvalve', NULL, NULL, CAST(0x00009D7C0005EE23 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (719, 89, N'1', N'Weakness/Paresis', NULL, NULL, CAST(0x00009D7C0005EE6C AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (720, 94, N'14', N'Currentpregnancy(upto6weekspostpartum)', NULL, NULL, CAST(0x00009D7C0005EE1B AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (721, 94, N'12', N'HF', NULL, NULL, CAST(0x00009D7C0005EE1C AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (722, 109, N'4', N'ND', NULL, NULL, CAST(0x00009D7C0005EE0E AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (723, 94, N'1', N'AtrialFib/Flutter', NULL, NULL, CAST(0x00009D7C0005EE1A AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (724, 94, N'16', N'PreviousTIA', NULL, NULL, CAST(0x00009D7C0005EE1C AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (725, 94, N'6', N'DiabetesMellitus', NULL, NULL, CAST(0x00009D7C0005EE1E AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (726, 94, N'8', N'Hypertension', NULL, NULL, CAST(0x00009D7C0005EE1F AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (727, 94, N'13', N'SickleCell', NULL, NULL, CAST(0x00009D7C0005EE1D AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (728, 94, N'4', N'CAD/priorMI', NULL, NULL, CAST(0x00009D7C0005EE1D AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (729, 269, N'2', N'None–contraindicated', NULL, NULL, CAST(0x00009D7C0005F7C6 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (730, 269, N'3', N'Statin', NULL, NULL, CAST(0x00009D7C0005F7C7 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (731, 267, N'8', N'Otheranti-hypertensivemed', NULL, NULL, CAST(0x00009D7C0005F7B8 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (732, 269, N'1', N'Noneprescribed/ND', NULL, NULL, CAST(0x00009D7C0005F7C6 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (733, 269, N'4', N'Fibrate', NULL, NULL, CAST(0x00009D7C0005F7C8 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (734, 269, N'8', N'Absorptioninhibitor', NULL, NULL, CAST(0x00009D7C0005F7C9 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (735, 264, N'1', N'HbA1c', NULL, NULL, CAST(0x00009D7C0005F80E AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (736, 269, N'6', N'Othermed', NULL, NULL, CAST(0x00009D7C0005F7C8 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (737, 269, N'7', N'Niacin', NULL, NULL, CAST(0x00009D7C0005F7C9 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (738, 267, N'1', N'Noneprescribed/ND', NULL, NULL, CAST(0x00009D7C0005F7B4 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (739, 267, N'2', N'None–contraindicated', NULL, NULL, CAST(0x00009D7C0005F7B4 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (740, 268, N'14', N'Serioussideeffecttomedication', NULL, NULL, CAST(0x00009D7C0005F7A6 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (741, 268, N'5', N'Terminalillness/ComfortMeasuresOnly', NULL, NULL, CAST(0x00009D7C0005F7A7 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (742, 267, N'3', N'ACEInhibitors', NULL, NULL, CAST(0x00009D7C0005F7B5 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (743, 267, N'6', N'Ca++ChannelBlockers', NULL, NULL, CAST(0x00009D7C0005F7B7 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (744, 267, N'7', N'Diuretics', NULL, NULL, CAST(0x00009D7C0005F7B7 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (745, 267, N'4', N'ARB', NULL, NULL, CAST(0x00009D7C0005F7B5 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (746, 267, N'5', N'BetaBlockers', NULL, NULL, CAST(0x00009D7C0005F7B6 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (747, 181, N'4', N'Transientischemicattack', NULL, NULL, CAST(0x00009D7C0005FC9C AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (748, 181, N'6', N'Strokenototherwisespecified', NULL, NULL, CAST(0x00009D7C0005FC9D AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (749, 181, N'2', N'IntracerebralHemorrhage', NULL, NULL, CAST(0x00009D7C0005FC9B AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (750, 181, N'3', N'Ischemicstroke', NULL, NULL, CAST(0x00009D7C0005FC9C AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (751, 181, N'8', N'Nostrokerelateddiagnosis', NULL, NULL, CAST(0x00009D7C0005FC9D AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (752, 192, N'3', N'Patientreferredtorehabilitationservicesfollowingdischarge', NULL, NULL, CAST(0x00009D7C0005FD38 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (753, 192, N'4', N'Patientineligibletoreceiverehabilitationservices(e.g.,symptomsresolved,poorprognosis,patientunabletotoleraterehabilitationtherapeuticregimen)', NULL, NULL, CAST(0x00009D7C0005FD38 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (754, 192, N'1', N'Patientreceivedrehabilitationservicesduringhospitalization', NULL, NULL, CAST(0x00009D7C0005FD36 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (755, 192, N'2', N'Patienttransferredtorehabilitationfacility', NULL, NULL, CAST(0x00009D7C0005FD37 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (756, 264, N'4', N'TestOther', NULL, NULL, CAST(0x00009D7C0005F810 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (757, 266, N'1', N'Noneprescribed/ND', NULL, NULL, CAST(0x00009D7C0005F81C AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (758, 264, N'2', N'FastingBloodSugar', NULL, NULL, CAST(0x00009D7C0005F80E AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (759, 264, N'3', N'OralGlucoseTolerance', NULL, NULL, CAST(0x00009D7C0005F80F AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (760, 266, N'2', N'None–contraindicated', NULL, NULL, CAST(0x00009D7C0005F81D AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (761, 266, N'5', N'Othersubcutaneous/injectableagents', NULL, NULL, CAST(0x00009D7C0005F81F AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (762, 181, N'1', N'SubarachnoidHemorrhage', NULL, NULL, CAST(0x00009D7C0005FC9A AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (763, 266, N'3', N'Insulin', NULL, NULL, CAST(0x00009D7C0005F81D AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (764, 266, N'4', N'Oralagents', NULL, NULL, CAST(0x00009D7C0005F81E AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (765, 268, N'2', N'Riskforfalls', NULL, NULL, CAST(0x00009D7C0005F7A6 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (766, 135, N'2', N'DelayinStrokediagnosis', NULL, NULL, CAST(0x00009D7C0005F108 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (767, 135, N'3', N'InhospitalTimeDelay', NULL, NULL, CAST(0x00009D7C0005F108 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (768, 133, N'5', N'CTfindingsof>1/3MCA', NULL, NULL, CAST(0x00009D7C0005F0FB AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (769, 135, N'6', N'DelayinPatientArrival', NULL, NULL, CAST(0x00009D7C0005F107 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (770, 135, N'4', N'NoIVaccess', NULL, NULL, CAST(0x00009D7C0005F109 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (771, 134, N'2', N'DelayinStrokediagnosis', NULL, NULL, CAST(0x00009D7C0005F117 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (772, 134, N'3', N'InhospitalTimeDelay', NULL, NULL, CAST(0x00009D7C0005F118 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (773, 135, N'5', N'Other', NULL, NULL, CAST(0x00009D7C0005F10A AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (774, 134, N'6', N'DelayinPatientArrival', NULL, NULL, CAST(0x00009D7C0005F116 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (775, 131, N'13', N'Rapidimprovement', NULL, NULL, CAST(0x00009D7C0005F0E9 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (776, 131, N'12', N'Strokeseveritytoomild', NULL, NULL, CAST(0x00009D7C0005F0EA AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (777, 131, N'5', N'Pregnancy', NULL, NULL, CAST(0x00009D7C0005F0E8 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (778, 131, N'9', N'Pt./Familyrefused', NULL, NULL, CAST(0x00009D7C0005F0E8 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (779, 131, N'1', N'Strokeseverity–Toosevere(e.g.,NIHSS>22)', NULL, NULL, CAST(0x00009D7C0005F0EA AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (780, 133, N'3', N'Anyanticoagulantusepriortoadmission(evenifINR<1.7)', NULL, NULL, CAST(0x00009D7C0005F0F9 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (781, 133, N'4', N'NIHSS>25', NULL, NULL, CAST(0x00009D7C0005F0FA AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (782, 133, N'1', N'Age>80', NULL, NULL, CAST(0x00009D7C0005F0F8 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (783, 133, N'2', N'PriorStrokeandDiabetes', NULL, NULL, CAST(0x00009D7C0005F0F9 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (784, 299, N'18', N'Riskforbleedingordiscontinuedduetobleeding', NULL, NULL, CAST(0x00009D7C0005F776 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (785, 299, N'21', N'Serioussideeffecttomedication', NULL, NULL, CAST(0x00009D7C0005F777 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (786, 299, N'13', N'Allergytoorcomplicationr/taspirin,ticlopidine,clopidogrel,dipyridamoleandwarfarinorheparins(hxorcurrent)', NULL, NULL, CAST(0x00009D7C0005F775 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (787, 299, N'4', N'Patient/Familyrefused', NULL, NULL, CAST(0x00009D7C0005F776 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (788, 299, N'8', N'Terminalillness/ComfortMeasuresOnly', NULL, NULL, CAST(0x00009D7C0005F777 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (789, 268, N'6', N'Patientrefused', NULL, NULL, CAST(0x00009D7C0005F7A3 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (790, 268, N'1', N'Riskforbleedingordiscontinuedduetobleeding', NULL, NULL, CAST(0x00009D7C0005F7A5 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (791, 268, N'13', N'Allergytoorcomplicationr/twarfarinorheparins(hxorcurrent)', NULL, NULL, CAST(0x00009D7C0005F7A2 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (792, 268, N'3', N'Mentalstatus', NULL, NULL, CAST(0x00009D7C0005F7A2 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (793, 87, N'1', N'Symptomaticintracranialhemorrhage<36hours', NULL, NULL, CAST(0x00009D7C0005F1BF AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (794, 87, N'2', N'Lifethreatening,serioussystemichemorrhage<36hours', NULL, NULL, CAST(0x00009D7C0005F1BF AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (795, 134, N'4', N'NoIVaccess', NULL, NULL, CAST(0x00009D7C0005F118 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (796, 134, N'5', N'Other', NULL, NULL, CAST(0x00009D7C0005F119 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (797, 87, N'5', N'Otherseriouscomplication', NULL, NULL, CAST(0x00009D7C0005F1C0 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (798, 36, N'1', N'Antiplatelet', NULL, NULL, CAST(0x00009D7C0005F2BF AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (799, 36, N'2', N'Anticoagulant', NULL, NULL, CAST(0x00009D7C0005F2C0 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (800, 87, N'3', N'Noseriouscomplications', NULL, NULL, CAST(0x00009D7C0005F1C0 AS DateTime), NULL)
+INSERT [dbo].[EurekaValue] ([ID], [EurekaFieldID], [Value], [Description], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (801, 87, N'4', N'UTD', NULL, NULL, CAST(0x00009D7C0005F1C1 AS DateTime), NULL)
+--
+
+SET IDENTITY_INSERT [dbo].[EurekaValue] OFF
+
+
+SET IDENTITY_INSERT [dbo].[AlienValue] ON
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (1, 28, 2, N'1', 213, NULL, NULL, CAST(0x00009D49015C60A1 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (2, 27, 2, N'1', 214, NULL, NULL, CAST(0x00009D49015C6120 AS DateTime), NULL, N'Checked')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (3, 24, 2, N'2', 211, NULL, NULL, CAST(0x00009D49015C60EA AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (4, 338, 2, N'1', 212, NULL, NULL, CAST(0x00009D49015C6AA7 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (5, 26, 2, N'1', 215, NULL, NULL, CAST(0x00009D49015C6130 AS DateTime), NULL, N'Checked')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (6, 312, 2, N'1', 218, NULL, NULL, CAST(0x00009D49015C6B20 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (7, 95, 2, N'3', 219, NULL, NULL, CAST(0x00009D49015C5C98 AS DateTime), NULL, N'Unable to ambulate ')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (8, 338, 2, N'2', 216, NULL, NULL, CAST(0x00009D49015C6AA8 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (9, 95, 2, N'9', 217, NULL, NULL, CAST(0x00009D49015C5C98 AS DateTime), NULL, N'ND')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (10, 24, 2, N'1', 210, NULL, NULL, CAST(0x00009D49015C60E9 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (11, 337, 2, N'1', 203, NULL, NULL, CAST(0x00009D49015C6A2B AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (12, 30, 2, N'2', 204, NULL, NULL, CAST(0x00009D49015C60B3 AS DateTime), NULL, N'No/ND')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (13, 29, 2, N'2', 201, NULL, NULL, CAST(0x00009D49015C608D AS DateTime), NULL, N'Symptomatic hemorrhage detected prior to patient transfer')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (14, 30, 2, N'3', 202, NULL, NULL, CAST(0x00009D49015C60B3 AS DateTime), NULL, N'NC')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (15, 337, 2, N'2', 205, NULL, NULL, CAST(0x00009D49015C6A2B AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (16, 25, 2, N'1', 208, NULL, NULL, CAST(0x00009D49015C610F AS DateTime), NULL, N'Checked')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (17, 24, 2, N'3', 209, NULL, NULL, CAST(0x00009D49015C60EB AS DateTime), NULL, N'ND')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (18, 30, 2, N'1', 206, NULL, NULL, CAST(0x00009D49015C60B2 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (19, 339, 2, N'1', 207, NULL, NULL, CAST(0x00009D49015C6A96 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (20, 95, 2, N'1', 220, NULL, NULL, CAST(0x00009D49015C5C96 AS DateTime), NULL, N'Able to ambulate independently (no help from another person) w/ or w/o device')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (21, 312, 2, N'2', 233, NULL, NULL, CAST(0x00009D49015C6B21 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (22, 92, 2, N'3', 234, NULL, NULL, CAST(0x00009D49015C5CEF AS DateTime), NULL, N'ND')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (23, 314, 2, N'1', 231, NULL, NULL, CAST(0x00009D49015C6B32 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (24, 313, 2, N'1', 232, NULL, NULL, CAST(0x00009D49015C6B43 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (25, 92, 2, N'1', 235, NULL, NULL, CAST(0x00009D49015C5CED AS DateTime), NULL, N'Actual')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (26, 99, 2, N'5', 238, NULL, NULL, CAST(0x00009D49015C5D70 AS DateTime), NULL, N'3-No effort against gravity')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (27, 99, 2, N'3', 239, NULL, NULL, CAST(0x00009D49015C5D6F AS DateTime), NULL, N'1-Drift')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (28, 92, 2, N'2', 236, NULL, NULL, CAST(0x00009D49015C5CEE AS DateTime), NULL, N'Estimated from record')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (29, 99, 2, N'4', 237, NULL, NULL, CAST(0x00009D49015C5D6F AS DateTime), NULL, N'2-Some effort against gravity')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (30, 314, 2, N'2', 230, NULL, NULL, CAST(0x00009D49015C6B32 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (31, 97, 2, N'2', 223, NULL, NULL, CAST(0x00009D49015C5CA6 AS DateTime), NULL, N'Ischemic stroke')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (32, 96, 2, N'3', 224, NULL, NULL, CAST(0x00009D49015C5CB7 AS DateTime), NULL, N'>= 60 minutes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (33, 95, 2, N'2', 221, NULL, NULL, CAST(0x00009D49015C5C97 AS DateTime), NULL, N'With assistance (from person)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (34, 96, 2, N'4', 222, NULL, NULL, CAST(0x00009D49015C5CB7 AS DateTime), NULL, N'ND')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (35, 96, 2, N'1', 225, NULL, NULL, CAST(0x00009D49015C5CB6 AS DateTime), NULL, N'Less then 10 minutes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (36, 313, 2, N'2', 228, NULL, NULL, CAST(0x00009D49015C6B43 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (37, 90, 2, N'1', 229, NULL, NULL, CAST(0x00009D49015C5CE0 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (38, 96, 2, N'2', 226, NULL, NULL, CAST(0x00009D49015C5CB6 AS DateTime), NULL, N'10 – 59 minutes ')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (39, 90, 2, N'2', 227, NULL, NULL, CAST(0x00009D49015C5CE0 AS DateTime), NULL, N'No/ND')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (40, 28, 2, N'2', 200, NULL, NULL, CAST(0x00009D49015C60A1 AS DateTime), NULL, N'No/ND')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (41, 329, 2, N'9', 173, NULL, NULL, CAST(0x00009D49015C69F5 AS DateTime), NULL, N'8 – Court/Law Enforcement')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (42, 329, 2, N'12', 174, NULL, NULL, CAST(0x00009D49015C69F6 AS DateTime), NULL, N'D – Transfer from One Distinct Unit of the Hospital to another Distinct Unit of the Same Hospital Resulting in a Separate Claim to the Payer')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (43, 43, 2, N'1', 171, NULL, NULL, CAST(0x00009D49015C6185 AS DateTime), NULL, N'Checked')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (44, 329, 2, N'10', 172, NULL, NULL, CAST(0x00009D49015C69F5 AS DateTime), NULL, N'9 – Information not Available')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (45, 329, 2, N'14', 175, NULL, NULL, CAST(0x00009D49015C69F7 AS DateTime), NULL, N'F – Transfer from Hospice and is Under a Hospice Plan of Care or Enrolled in a Hospice Program')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (46, 340, 2, N'2', 178, NULL, NULL, CAST(0x00009D49015C6ABA AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (47, 20, 2, N'1', 179, NULL, NULL, CAST(0x00009D49015C6303 AS DateTime), NULL, N' in')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (48, 329, 2, N'13', 176, NULL, NULL, CAST(0x00009D49015C69F6 AS DateTime), NULL, N'E – Transfer from Ambulatory Surgery Center')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (49, 20, 2, N'2', 177, NULL, NULL, CAST(0x00009D49015C6304 AS DateTime), NULL, N' cm')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (50, 331, 2, N'2', 170, NULL, NULL, CAST(0x00009D49015C6A08 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (51, 66, 2, N'3', 163, NULL, NULL, CAST(0x00009D49015C63CF AS DateTime), NULL, N'02 Dsch/Trans to a short term general hospital for inpatient care')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (52, 328, 2, N'1', 164, NULL, NULL, CAST(0x00009D49015C69CF AS DateTime), NULL, N'Medicare')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (53, 329, 2, N'7', 161, NULL, NULL, CAST(0x00009D49015C69F3 AS DateTime), NULL, N'6 – Transfer from another Health Care Facility')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (54, 66, 2, N'2', 162, NULL, NULL, CAST(0x00009D49015C63CE AS DateTime), NULL, N'01 Discharged to home or self care (routine discharge)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (55, 329, 2, N'2', 165, NULL, NULL, CAST(0x00009D49015C69F1 AS DateTime), NULL, N'1 – Non-Health Care Facility Point of Origin')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (56, 330, 2, N'1', 168, NULL, NULL, CAST(0x00009D49015C6A18 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (57, 331, 2, N'1', 169, NULL, NULL, CAST(0x00009D49015C6A07 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (58, 328, 2, N'2', 166, NULL, NULL, CAST(0x00009D49015C69D0 AS DateTime), NULL, N'Non-Medicare')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (59, 330, 2, N'2', 167, NULL, NULL, CAST(0x00009D49015C6A19 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (60, 341, 2, N'2', 180, NULL, NULL, CAST(0x00009D49015C6ADC AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (61, 342, 2, N'1', 193, NULL, NULL, CAST(0x00009D49015C6ACB AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (62, 345, 2, N'1', 194, NULL, NULL, CAST(0x00009D49015C6A60 AS DateTime), NULL, N'1 – Day 0 or 1')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (63, 347, 2, N'1', 191, NULL, NULL, CAST(0x00009D49015C6A72 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (64, 342, 2, N'2', 192, NULL, NULL, CAST(0x00009D49015C6ACB AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (65, 345, 2, N'3', 195, NULL, NULL, CAST(0x00009D49015C6A61 AS DateTime), NULL, N'3 – Timing unclear')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (66, 29, 2, N'5', 198, NULL, NULL, CAST(0x00009D49015C608F AS DateTime), NULL, N'N/A')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (67, 29, 2, N'3', 199, NULL, NULL, CAST(0x00009D49015C608D AS DateTime), NULL, N'Symptomatic hemorrhage detected only after patient transfer')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (68, 345, 2, N'2', 196, NULL, NULL, CAST(0x00009D49015C6A60 AS DateTime), NULL, N'2 – Day 2 or after')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (69, 29, 2, N'4', 197, NULL, NULL, CAST(0x00009D49015C608E AS DateTime), NULL, N'Unable to determine')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (70, 347, 2, N'2', 190, NULL, NULL, CAST(0x00009D49015C6A72 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (71, 339, 2, N'2', 183, NULL, NULL, CAST(0x00009D49015C6A96 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (72, 23, 2, N'2', 184, NULL, NULL, CAST(0x00009D49015C60FC AS DateTime), NULL, N'No/ND')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (73, 341, 2, N'1', 181, NULL, NULL, CAST(0x00009D49015C6ADC AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (74, 23, 2, N'5', 182, NULL, NULL, CAST(0x00009D49015C60FD AS DateTime), NULL, N'NC')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (75, 340, 2, N'1', 185, NULL, NULL, CAST(0x00009D49015C6ABA AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (76, 345, 2, N'4', 188, NULL, NULL, CAST(0x00009D49015C6A61 AS DateTime), NULL, N'4 – Not Documented/UTD')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (77, 346, 2, N'2', 189, NULL, NULL, CAST(0x00009D49015C6A84 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (78, 23, 2, N'1', 186, NULL, NULL, CAST(0x00009D49015C60FB AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (79, 346, 2, N'1', 187, NULL, NULL, CAST(0x00009D49015C6A83 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (80, 311, 2, N'1', 240, NULL, NULL, CAST(0x00009D49015C6AFE AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (81, 318, 2, N'3', 293, NULL, NULL, CAST(0x00009D49015C6C37 AS DateTime), NULL, N'MM/DD/YYYY')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (82, 72, 2, N'2', 294, NULL, NULL, CAST(0x00009D49015C636A AS DateTime), NULL, N' cm')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (83, 68, 2, N'3', 291, NULL, NULL, CAST(0x00009D49015C63ED AS DateTime), NULL, N'With assistance (from person)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (84, 318, 2, N'0', 292, NULL, NULL, CAST(0x00009D49015C6C38 AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (85, 323, 2, N'5', 295, NULL, NULL, CAST(0x00009D49015C6BDE AS DateTime), NULL, N'MM/DD/YYYY HH24:MM')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (86, 212, 2, N'100', 298, NULL, NULL, CAST(0x00009D49015C6E03 AS DateTime), NULL, N'75 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (87, 211, 2, N'703', 299, NULL, NULL, CAST(0x00009D49015C6E38 AS DateTime), NULL, N'10 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (88, 72, 2, N'1', 296, NULL, NULL, CAST(0x00009D49015C6369 AS DateTime), NULL, N' in')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (89, 284, 2, N'1', 297, NULL, NULL, CAST(0x00009D49015C66AF AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (90, 68, 2, N'2', 290, NULL, NULL, CAST(0x00009D49015C63EC AS DateTime), NULL, N'Able to ambulate independently (no help from another person) w/ or w/o device')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (91, 88, 2, N'3', 283, NULL, NULL, CAST(0x00009D49015C5CD3 AS DateTime), NULL, N'ND')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (92, 88, 2, N'1', 284, NULL, NULL, CAST(0x00009D49015C5CD2 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (93, 317, 2, N'0', 281, NULL, NULL, CAST(0x00009D49015C6C14 AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (94, 88, 2, N'2', 282, NULL, NULL, CAST(0x00009D49015C5CD2 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (95, 315, 2, N'3', 285, NULL, NULL, CAST(0x00009D49015C6BA8 AS DateTime), NULL, N'MM/DD/YYYY')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (96, 323, 2, N'3', 288, NULL, NULL, CAST(0x00009D49015C6BDF AS DateTime), NULL, N'MM/DD/YYYY')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (97, 68, 2, N'4', 289, NULL, NULL, CAST(0x00009D49015C63EE AS DateTime), NULL, N'Unable to ambulate')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (98, 315, 2, N'5', 286, NULL, NULL, CAST(0x00009D49015C6BA8 AS DateTime), NULL, N'MM/DD/YYYY HH24:MM')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (99, 68, 2, N'5', 287, NULL, NULL, CAST(0x00009D49015C63EE AS DateTime), NULL, N'ND')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (100, 211, 2, N'701', 300, NULL, NULL, CAST(0x00009D49015C6E36 AS DateTime), NULL, N'5 mg')
+
+print 'Processed 100 total records'
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (101, 211, 2, N'501', 313, NULL, NULL, CAST(0x00009D49015C6E35 AS DateTime), NULL, N'Other')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (102, 211, 2, N'502', 314, NULL, NULL, CAST(0x00009D49015C6E35 AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (103, 211, 2, N'305', 311, NULL, NULL, CAST(0x00009D49015C6E30 AS DateTime), NULL, N'6 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (104, 211, 2, N'306', 312, NULL, NULL, CAST(0x00009D49015C6E30 AS DateTime), NULL, N'7.5 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (105, 211, 2, N'500', 315, NULL, NULL, CAST(0x00009D49015C6E34 AS DateTime), NULL, N'250 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (106, 212, 2, N'400', 318, NULL, NULL, CAST(0x00009D49015C6E0F AS DateTime), NULL, N'75 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (107, 212, 2, N'401', 319, NULL, NULL, CAST(0x00009D49015C6E10 AS DateTime), NULL, N'Other')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (108, 211, 2, N'401', 316, NULL, NULL, CAST(0x00009D49015C6E33 AS DateTime), NULL, N'Other')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (109, 211, 2, N'402', 317, NULL, NULL, CAST(0x00009D49015C6E33 AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (110, 211, 2, N'307', 310, NULL, NULL, CAST(0x00009D49015C6E31 AS DateTime), NULL, N'Other')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (111, 212, 2, N'105', 303, NULL, NULL, CAST(0x00009D49015C6E06 AS DateTime), NULL, N'325 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (112, 212, 2, N'103', 304, NULL, NULL, CAST(0x00009D49015C6E05 AS DateTime), NULL, N'162 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (113, 211, 2, N'702', 301, NULL, NULL, CAST(0x00009D49015C6E37 AS DateTime), NULL, N'7.5 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (114, 212, 2, N'104', 302, NULL, NULL, CAST(0x00009D49015C6E05 AS DateTime), NULL, N'300 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (115, 212, 2, N'101', 305, NULL, NULL, CAST(0x00009D49015C6E04 AS DateTime), NULL, N'81 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (116, 211, 2, N'308', 308, NULL, NULL, CAST(0x00009D49015C6E31 AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (117, 211, 2, N'400', 309, NULL, NULL, CAST(0x00009D49015C6E32 AS DateTime), NULL, N'75 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (118, 212, 2, N'102', 306, NULL, NULL, CAST(0x00009D49015C6E04 AS DateTime), NULL, N'125 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (119, 211, 2, N'700', 307, NULL, NULL, CAST(0x00009D49015C6E36 AS DateTime), NULL, N'2.5 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (120, 318, 2, N'5', 280, NULL, NULL, CAST(0x00009D49015C6C37 AS DateTime), NULL, N'MM/DD/YYYY HH24:MM')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (121, 98, 2, N'5', 253, NULL, NULL, CAST(0x00009D49015C5D09 AS DateTime), NULL, N'3-Coma')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (122, 98, 2, N'3', 254, NULL, NULL, CAST(0x00009D49015C5D08 AS DateTime), NULL, N'1-Not alert, but arousable with minimal stimulation')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (123, 97, 2, N'4', 251, NULL, NULL, CAST(0x00009D49015C5CA7 AS DateTime), NULL, N'Subarachnoid Hemorrhage               ')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (124, 98, 2, N'4', 252, NULL, NULL, CAST(0x00009D49015C5D09 AS DateTime), NULL, N'2-Not alert, requires repeated stimulation to attend')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (125, 311, 2, N'2', 255, NULL, NULL, CAST(0x00009D49015C6AFF AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (126, 66, 2, N'21', 258, NULL, NULL, CAST(0x00009D49015C63DA AS DateTime), NULL, N'65 Dsch/Trans to a psychiatric hospital or psychiatric distinct part unit of a hospital')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (127, 66, 2, N'16', 259, NULL, NULL, CAST(0x00009D49015C63D9 AS DateTime), NULL, N'63 Dsch/Trans to a Medicare certified long term care hospital (LTCH)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (128, 98, 2, N'2', 256, NULL, NULL, CAST(0x00009D49015C5D07 AS DateTime), NULL, N'0-Alert')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (129, 66, 2, N'19', 257, NULL, NULL, CAST(0x00009D49015C63D9 AS DateTime), NULL, N'64 Dsch/Trans to a nursing facility certified under Medicaid but not certified under Medicare')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (130, 97, 2, N'3', 250, NULL, NULL, CAST(0x00009D49015C5CA6 AS DateTime), NULL, N'Transient Ischemic Attack (< 24 hours)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (131, 100, 2, N'4', 243, NULL, NULL, CAST(0x00009D49015C5D60 AS DateTime), NULL, N'2-Some effort against gravity')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (132, 100, 2, N'2', 244, NULL, NULL, CAST(0x00009D49015C5D5E AS DateTime), NULL, N'0-Normal (extends arms 90 (or 45) degrees for 10 seconds without drift)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (133, 99, 2, N'2', 241, NULL, NULL, CAST(0x00009D49015C5D6E AS DateTime), NULL, N'0-Normal (extends arms 90 (or 45) degrees for 10 seconds without drift)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (134, 100, 2, N'3', 242, NULL, NULL, CAST(0x00009D49015C5D5F AS DateTime), NULL, N'1-Drift')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (135, 99, 2, N'6', 245, NULL, NULL, CAST(0x00009D49015C5D71 AS DateTime), NULL, N'4-No movement')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (136, 97, 2, N'7', 248, NULL, NULL, CAST(0x00009D49015C5CA9 AS DateTime), NULL, N'No stroke related diagnosis')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (137, 97, 2, N'5', 249, NULL, NULL, CAST(0x00009D49015C5CA7 AS DateTime), NULL, N'Intracerebral Hemorrhage')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (138, 99, 2, N'7', 246, NULL, NULL, CAST(0x00009D49015C5D71 AS DateTime), NULL, N'U-Untestable (Joint fused or limb amputated)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (139, 97, 2, N'6', 247, NULL, NULL, CAST(0x00009D49015C5CA8 AS DateTime), NULL, N'Stroke not otherwise specified')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (140, 66, 2, N'14', 260, NULL, NULL, CAST(0x00009D49015C63D7 AS DateTime), NULL, N'61 Dsch/Trans to hospital-based Medicare approved swing bed')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (141, 66, 2, N'13', 273, NULL, NULL, CAST(0x00009D49015C63D7 AS DateTime), NULL, N'51-Hospice – medical facility (certified) providing hospice level of care')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (142, 66, 2, N'20', 274, NULL, NULL, CAST(0x00009D49015C63D5 AS DateTime), NULL, N'43 Dsch/Trans to a federal health care facility')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (143, 66, 2, N'5', 271, NULL, NULL, CAST(0x00009D49015C63D1 AS DateTime), NULL, N'4')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (144, 66, 2, N'12', 272, NULL, NULL, CAST(0x00009D49015C63D6 AS DateTime), NULL, N'50 Hospice – home')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (145, 66, 2, N'10', 275, NULL, NULL, CAST(0x00009D49015C63D4 AS DateTime), NULL, N'20 Expired')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (146, 315, 2, N'0', 278, NULL, NULL, CAST(0x00009D49015C6BAB AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (147, 317, 2, N'3', 279, NULL, NULL, CAST(0x00009D49015C6C13 AS DateTime), NULL, N'MM/DD/YYYY')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (148, 66, 2, N'24', 276, NULL, NULL, CAST(0x00009D49015C63D5 AS DateTime), NULL, N'21 Dsch/Trans to court/law enforcement')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (149, 317, 2, N'5', 277, NULL, NULL, CAST(0x00009D49015C6C13 AS DateTime), NULL, N'MM/DD/YYYY HH24:MM')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (150, 66, 2, N'4', 270, NULL, NULL, CAST(0x00009D49015C63CF AS DateTime), NULL, N'3')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (151, 323, 2, N'0', 263, NULL, NULL, CAST(0x00009D49015C6BDF AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (152, 67, 2, N'1', 264, NULL, NULL, CAST(0x00009D49015C63BC AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (153, 66, 2, N'15', 261, NULL, NULL, CAST(0x00009D49015C63D8 AS DateTime), NULL, N'62 Dsch/Trans to an inpatient rehabilitation facility (IRF) including rehabilitation distinct part units of a hospital')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (154, 67, 2, N'2', 262, NULL, NULL, CAST(0x00009D49015C63BD AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (155, 66, 2, N'22', 265, NULL, NULL, CAST(0x00009D49015C63DA AS DateTime), NULL, N'66 Discharged/transferred to a Critical Access Hospital (CAH) ')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (156, 66, 2, N'8', 268, NULL, NULL, CAST(0x00009D49015C63D4 AS DateTime), NULL, N'07 Left against medical advice or discontinued care')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (157, 66, 2, N'23', 269, NULL, NULL, CAST(0x00009D49015C63D2 AS DateTime), NULL, N'05 Discharged/transferred to a Designated Cancer Center or Children''s Hospital')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (158, 66, 2, N'6', 266, NULL, NULL, CAST(0x00009D49015C63DB AS DateTime), NULL, N'70')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (159, 66, 2, N'7', 267, NULL, NULL, CAST(0x00009D49015C63D2 AS DateTime), NULL, N'6')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (160, 329, 2, N'8', 160, NULL, NULL, CAST(0x00009D49015C69F4 AS DateTime), NULL, N'7 – Emergency Room')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (161, 302, 2, N'5', 53, NULL, NULL, CAST(0x00009D49015C673B AS DateTime), NULL, N'warfarin (Coumadin)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (162, 302, 2, N'9', 54, NULL, NULL, CAST(0x00009D49015C673A AS DateTime), NULL, N'full dose LMW heparin')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (163, 106, 2, N'3', 51, NULL, NULL, CAST(0x00009D49015C5D33 AS DateTime), NULL, N'1-Partial gaze palsy')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (164, 106, 2, N'2', 52, NULL, NULL, CAST(0x00009D49015C5D32 AS DateTime), NULL, N'0-Normal')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (165, 302, 2, N'12', 55, NULL, NULL, CAST(0x00009D49015C673B AS DateTime), NULL, N'Fondaparinux (Arixtra)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (166, 302, 2, N'11', 58, NULL, NULL, CAST(0x00009D49015C6739 AS DateTime), NULL, N'Other Antiplatelet')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (167, 137, 2, N'5', 59, NULL, NULL, CAST(0x00009D49015C5EEB AS DateTime), NULL, N'MM/DD/YYYY HH24:MM')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (168, 302, 2, N'See Appendix 2', 56, NULL, NULL, CAST(0x00009D49015C673C AS DateTime), NULL, N'')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (169, 302, 2, N'13', 57, NULL, NULL, CAST(0x00009D49015C673C AS DateTime), NULL, N'Other Anticoagulant')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (170, 106, 2, N'4', 50, NULL, NULL, CAST(0x00009D49015C5D34 AS DateTime), NULL, N'2-Forced deviation')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (171, 101, 2, N'5', 43, NULL, NULL, CAST(0x00009D49015C5D7F AS DateTime), NULL, N'3-No effort against gravity')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (172, 107, 2, N'5', 44, NULL, NULL, CAST(0x00009D49015C5D51 AS DateTime), NULL, N'3-Complete paralysis of one or both sides')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (173, 107, 2, N'4', 41, NULL, NULL, CAST(0x00009D49015C5D51 AS DateTime), NULL, N'2-Partial paralysis (total or near paralysis of lower face)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (174, 108, 2, N'2', 42, NULL, NULL, CAST(0x00009D49015C5D41 AS DateTime), NULL, N'0-No visual field loss')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (175, 101, 2, N'7', 45, NULL, NULL, CAST(0x00009D49015C5D80 AS DateTime), NULL, N'U-Untestable (Joint fused or limb amputated)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (176, 102, 2, N'3', 48, NULL, NULL, CAST(0x00009D49015C5D9E AS DateTime), NULL, N'1-Present in one limb')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (177, 310, 2, N'1', 49, NULL, NULL, CAST(0x00009D49015C6B0F AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (178, 309, 2, N'5', 46, NULL, NULL, CAST(0x00009D49015C6B86 AS DateTime), NULL, N'MM/DD/YYYY HH24:MM')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (179, 102, 2, N'2', 47, NULL, NULL, CAST(0x00009D49015C5D9D AS DateTime), NULL, N'0-No ataxia')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (180, 136, 2, N'2', 60, NULL, NULL, CAST(0x00009D49015C5EFD AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (181, 137, 2, N'3', 73, NULL, NULL, CAST(0x00009D49015C5EEB AS DateTime), NULL, N'MM/DD/YYYY')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (182, 145, 2, N'2', 74, NULL, NULL, CAST(0x00009D49015C6066 AS DateTime), NULL, N'Day 3 or after')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (183, 126, 2, N'1', 71, NULL, NULL, CAST(0x00009D49015C5BEA AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (184, 126, 2, N'2', 72, NULL, NULL, CAST(0x00009D49015C5BEB AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (185, 145, 2, N'3', 75, NULL, NULL, CAST(0x00009D49015C6067 AS DateTime), NULL, N'Timing unclear')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (186, 301, 2, N'12', 78, NULL, NULL, CAST(0x00009D49015C670E AS DateTime), NULL, N'Fondaparinux (Arixtra)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (187, 147, 2, N'1', 79, NULL, NULL, CAST(0x00009D49015C5FD1 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (188, 145, 2, N'1', 76, NULL, NULL, CAST(0x00009D49015C6066 AS DateTime), NULL, N'Day 1 or 2')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (189, 301, 2, N'13', 77, NULL, NULL, CAST(0x00009D49015C670F AS DateTime), NULL, N'Other Anticoagulant')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (190, 303, 2, N'6', 70, NULL, NULL, CAST(0x00009D49015C6766 AS DateTime), NULL, N'clopidogrel (Plavix)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (191, 303, 2, N'11', 63, NULL, NULL, CAST(0x00009D49015C6767 AS DateTime), NULL, N'Other Antiplatelet')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (192, 303, 2, N'7', 64, NULL, NULL, CAST(0x00009D49015C6766 AS DateTime), NULL, N'ticlopidine (Ticlid)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (193, 302, 2, N'8', 61, NULL, NULL, CAST(0x00009D49015C6739 AS DateTime), NULL, N'Unfractionated heparin IV')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (194, 136, 2, N'1', 62, NULL, NULL, CAST(0x00009D49015C5EFC AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (195, 303, 2, N'8', 65, NULL, NULL, CAST(0x00009D49015C6767 AS DateTime), NULL, N'Unfractionated heparin IV')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (196, 303, 2, N'4', 68, NULL, NULL, CAST(0x00009D49015C6765 AS DateTime), NULL, N'ASA/dipyridamole (Aggrenox)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (197, 303, 2, N'3', 69, NULL, NULL, CAST(0x00009D49015C6764 AS DateTime), NULL, N'aspirin   ')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (198, 123, 2, N'1', 66, NULL, NULL, CAST(0x00009D49015C5C39 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (199, 123, 2, N'2', 67, NULL, NULL, CAST(0x00009D49015C5C3A AS DateTime), NULL, N'No/UTD')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (200, 107, 2, N'2', 40, NULL, NULL, CAST(0x00009D49015C5D4F AS DateTime), NULL, N'0-Normal symmetrical movement')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (201, 112, 2, N'2', 13, NULL, NULL, CAST(0x00009D49015C5BA8 AS DateTime), NULL, N'Direct Admit or direct to floor')
+
+print 'Processed 200 total records'
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (202, 110, 2, N'2', 14, NULL, NULL, CAST(0x00009D49015C5B9B AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (203, 112, 2, N'4', 11, NULL, NULL, CAST(0x00009D49015C5BAA AS DateTime), NULL, N'ND or Cannot be determined')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (204, 112, 2, N'1', 12, NULL, NULL, CAST(0x00009D49015C5BA8 AS DateTime), NULL, N'Emergency Department/Urgent Care')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (205, 304, 2, N'6', 15, NULL, NULL, CAST(0x00009D49015C6753 AS DateTime), NULL, N'Other')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (206, 100, 2, N'6', 18, NULL, NULL, CAST(0x00009D49015C5D61 AS DateTime), NULL, N'4-No movement')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (207, 111, 2, N'1', 19, NULL, NULL, CAST(0x00009D49015C5B8B AS DateTime), NULL, N'EMS from home/scene')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (208, 101, 2, N'2', 16, NULL, NULL, CAST(0x00009D49015C5D7D AS DateTime), NULL, N'0-Normal (extends arms 90 (or 45) degrees for 10 seconds without drift)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (209, 110, 2, N'1', 17, NULL, NULL, CAST(0x00009D49015C5B9A AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (210, 112, 2, N'3', 10, NULL, NULL, CAST(0x00009D49015C5BA9 AS DateTime), NULL, N'Imaging suite prior to ED')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (211, 101, 2, N'4', 3, NULL, NULL, CAST(0x00009D49015C5D7E AS DateTime), NULL, N'2-Some effort against gravity')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (212, 108, 2, N'4', 4, NULL, NULL, CAST(0x00009D49015C5D42 AS DateTime), NULL, N'2-Complete hemianopia')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (213, 108, 2, N'5', 1, NULL, NULL, CAST(0x00009D49015C5D43 AS DateTime), NULL, N'3-Bilateral hemianopia (blind including cortical blindness)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (214, 108, 2, N'3', 2, NULL, NULL, CAST(0x00009D49015C5D42 AS DateTime), NULL, N'1-Partial hemianopia')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (215, 101, 2, N'3', 5, NULL, NULL, CAST(0x00009D49015C5D7E AS DateTime), NULL, N'1-Drift')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (216, 111, 2, N'2', 8, NULL, NULL, CAST(0x00009D49015C5B8C AS DateTime), NULL, N'Private transport/taxi/other from home/scene')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (217, 111, 2, N'3', 9, NULL, NULL, CAST(0x00009D49015C5B8D AS DateTime), NULL, N'Transfer from other hospital')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (218, 111, 2, N'9', 6, NULL, NULL, CAST(0x00009D49015C5B8D AS DateTime), NULL, N'ND or unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (219, 304, 2, N'7', 7, NULL, NULL, CAST(0x00009D49015C6753 AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (220, 310, 2, N'2', 20, NULL, NULL, CAST(0x00009D49015C6B10 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (221, 104, 2, N'2', 33, NULL, NULL, CAST(0x00009D49015C5D25 AS DateTime), NULL, N'0-Obeys both correctly')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (222, 104, 2, N'4', 34, NULL, NULL, CAST(0x00009D49015C5D26 AS DateTime), NULL, N'2-Both incorrect')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (223, 309, 2, N'0', 31, NULL, NULL, CAST(0x00009D49015C6B87 AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (224, 103, 2, N'7', 32, NULL, NULL, CAST(0x00009D49015C5D91 AS DateTime), NULL, N'U-Untestable (Joint fused or limb amputated)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (225, 103, 2, N'5', 35, NULL, NULL, CAST(0x00009D49015C5D8F AS DateTime), NULL, N'3-No effort against gravity')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (226, 101, 2, N'6', 38, NULL, NULL, CAST(0x00009D49015C5D80 AS DateTime), NULL, N'4-No movement')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (227, 107, 2, N'3', 39, NULL, NULL, CAST(0x00009D49015C5D50 AS DateTime), NULL, N'1-Minor paralysis (flattened nasolabial fold, asymmetry on smiling)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (228, 104, 2, N'3', 36, NULL, NULL, CAST(0x00009D49015C5D25 AS DateTime), NULL, N'1-Obeys one correctly')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (229, 105, 2, N'4', 37, NULL, NULL, CAST(0x00009D49015C5D17 AS DateTime), NULL, N'2-Both incorrect')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (230, 103, 2, N'6', 30, NULL, NULL, CAST(0x00009D49015C5D90 AS DateTime), NULL, N'4-No movement')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (231, 105, 2, N'2', 23, NULL, NULL, CAST(0x00009D49015C5D16 AS DateTime), NULL, N'0-Answers both correctly')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (232, 309, 2, N'3', 24, NULL, NULL, CAST(0x00009D49015C6B87 AS DateTime), NULL, N'MM/DD/YYYY')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (233, 100, 2, N'7', 21, NULL, NULL, CAST(0x00009D49015C5D62 AS DateTime), NULL, N'U-Untestable (Joint fused or limb amputated)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (234, 103, 2, N'3', 22, NULL, NULL, CAST(0x00009D49015C5D8E AS DateTime), NULL, N'1-Drift')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (235, 103, 2, N'2', 25, NULL, NULL, CAST(0x00009D49015C5D8D AS DateTime), NULL, N'0-Normal (extends arms 90 (or 45) degrees for 10 seconds without drift)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (236, 102, 2, N'5', 28, NULL, NULL, CAST(0x00009D49015C5DA0 AS DateTime), NULL, N'U-Untestable (Joint fused or limb amputated)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (237, 103, 2, N'4', 29, NULL, NULL, CAST(0x00009D49015C5D8F AS DateTime), NULL, N'2-Some effort against gravity')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (238, 105, 2, N'3', 26, NULL, NULL, CAST(0x00009D49015C5D16 AS DateTime), NULL, N'1-Answers one correctly')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (239, 102, 2, N'4', 27, NULL, NULL, CAST(0x00009D49015C5D9F AS DateTime), NULL, N'2-Present in two limbs')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (240, 147, 2, N'2', 80, NULL, NULL, CAST(0x00009D49015C5FD2 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (241, 119, 2, N'10', 133, NULL, NULL, CAST(0x00009D49015C5B6A AS DateTime), NULL, N'Transfer from One Distinct Unit of the Hospital to another Distinct Unit of the Same Hospital Resulting in a Separate Claim to the Payer')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (242, 119, 2, N'8', 134, NULL, NULL, CAST(0x00009D49015C5B69 AS DateTime), NULL, N'Transfer from another Health Care Facility')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (243, 119, 2, N'11', 131, NULL, NULL, CAST(0x00009D49015C5B6A AS DateTime), NULL, N'Information not available')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (244, 119, 2, N'12', 132, NULL, NULL, CAST(0x00009D49015C5B6B AS DateTime), NULL, N'HMO referral')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (245, 119, 2, N'9', 135, NULL, NULL, CAST(0x00009D49015C5B69 AS DateTime), NULL, N'Transfer from Hospice and is Under a Hospice Plan of Care or Enrolled in a Hospice Program')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (246, 332, 2, N'5', 138, NULL, NULL, CAST(0x00009D49015C698A AS DateTime), NULL, N'White')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (247, 332, 2, N'8', 139, NULL, NULL, CAST(0x00009D49015C698B AS DateTime), NULL, N'UTD')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (248, 100, 2, N'5', 136, NULL, NULL, CAST(0x00009D49015C5D61 AS DateTime), NULL, N'3-No effort against gravity')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (249, 332, 2, N'6', 137, NULL, NULL, CAST(0x00009D49015C698A AS DateTime), NULL, N'Native Hawaiian/Pacific Islander')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (250, 119, 2, N'4', 130, NULL, NULL, CAST(0x00009D49015C5B66 AS DateTime), NULL, N'Non-Health Care Facility Point of Origin')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (251, 121, 2, N'2', 123, NULL, NULL, CAST(0x00009D49015C5C2D AS DateTime), NULL, N'Female')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (252, 303, 2, N'12', 124, NULL, NULL, CAST(0x00009D49015C6769 AS DateTime), NULL, N'Fondaparinux (Arixtra)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (253, 121, 2, N'3', 121, NULL, NULL, CAST(0x00009D49015C5C2D AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (254, 303, 2, N'5', 122, NULL, NULL, CAST(0x00009D49015C6769 AS DateTime), NULL, N'warfarin (Coumadin)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (255, 121, 2, N'1', 125, NULL, NULL, CAST(0x00009D49015C5C2C AS DateTime), NULL, N'Male')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (256, 119, 2, N'5', 128, NULL, NULL, CAST(0x00009D49015C5B67 AS DateTime), NULL, N'Transfer From a Hospital (Different Facility)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (257, 119, 2, N'3', 129, NULL, NULL, CAST(0x00009D49015C5B65 AS DateTime), NULL, N'Emergency room')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (258, 119, 2, N'6', 126, NULL, NULL, CAST(0x00009D49015C5B67 AS DateTime), NULL, N'Transfer from a Skilled Nursing Facility (SNF) or Intermediate Care Facility (ICF)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (259, 119, 2, N'7', 127, NULL, NULL, CAST(0x00009D49015C5B68 AS DateTime), NULL, N'Transfer from Ambulatory Surgery Center')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (260, 35, 2, N'1', 140, NULL, NULL, CAST(0x00009D49015C61A5 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (261, 34, 2, N'5', 153, NULL, NULL, CAST(0x00009D49015C61B8 AS DateTime), NULL, N'NC')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (262, 34, 2, N'1', 154, NULL, NULL, CAST(0x00009D49015C61B7 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (263, 31, 2, N'2', 151, NULL, NULL, CAST(0x00009D49015C60D8 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (264, 34, 2, N'6', 152, NULL, NULL, CAST(0x00009D49015C61B7 AS DateTime), NULL, N'No/ND')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (265, 32, 2, N'3', 155, NULL, NULL, CAST(0x00009D49015C60C7 AS DateTime), NULL, N'ND')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (266, 329, 2, N'3', 158, NULL, NULL, CAST(0x00009D49015C69F1 AS DateTime), NULL, N'2 – Clinic')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (267, 329, 2, N'6', 159, NULL, NULL, CAST(0x00009D49015C69F3 AS DateTime), NULL, N'5 – Transfer from a Skilled Nursing Facility (SNF) of Intermediate Care Facility (ICF)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (268, 33, 2, N'1', 156, NULL, NULL, CAST(0x00009D49015C6140 AS DateTime), NULL, N'Checked')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (269, 329, 2, N'5', 157, NULL, NULL, CAST(0x00009D49015C69F2 AS DateTime), NULL, N'4 – Transfer from a Hospital (Different Facility)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (270, 31, 2, N'1', 150, NULL, NULL, CAST(0x00009D49015C60D7 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (271, 41, 2, N'1', 143, NULL, NULL, CAST(0x00009D49015C6174 AS DateTime), NULL, N'Checked')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (272, 40, 2, N'1', 144, NULL, NULL, CAST(0x00009D49015C6152 AS DateTime), NULL, N'Checked')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (273, 35, 2, N'2', 141, NULL, NULL, CAST(0x00009D49015C61A6 AS DateTime), NULL, N'No/ND')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (274, 332, 2, N'3', 142, NULL, NULL, CAST(0x00009D49015C6989 AS DateTime), NULL, N'American Indian/Alaska Native')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (275, 39, 2, N'1', 145, NULL, NULL, CAST(0x00009D49015C6163 AS DateTime), NULL, N'Checked')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (276, 32, 2, N'2', 148, NULL, NULL, CAST(0x00009D49015C60C6 AS DateTime), NULL, N'Fail')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (277, 31, 2, N'3', 149, NULL, NULL, CAST(0x00009D49015C60D8 AS DateTime), NULL, N'NC')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (278, 332, 2, N'4', 146, NULL, NULL, CAST(0x00009D49015C6989 AS DateTime), NULL, N'Asian')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (279, 32, 2, N'1', 147, NULL, NULL, CAST(0x00009D49015C60C5 AS DateTime), NULL, N'Pass')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (280, 303, 2, N'13', 120, NULL, NULL, CAST(0x00009D49015C676A AS DateTime), NULL, N'Other Anticoagulant')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (281, 142, 2, N'2', 93, NULL, NULL, CAST(0x00009D49015C6033 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (282, 303, 2, N'9', 94, NULL, NULL, CAST(0x00009D49015C6768 AS DateTime), NULL, N'full dose LMW heparin')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (283, 301, 2, N'See Appendix 2', 91, NULL, NULL, CAST(0x00009D49015C670F AS DateTime), NULL, N'')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (284, 142, 2, N'1', 92, NULL, NULL, CAST(0x00009D49015C6033 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (285, 118, 2, N'3', 95, NULL, NULL, CAST(0x00009D49015C5B7D AS DateTime), NULL, N'Chronic health care facility')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (286, 117, 2, N'2', 98, NULL, NULL, CAST(0x00009D49015C5B4D AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (287, 118, 2, N'1', 99, NULL, NULL, CAST(0x00009D49015C5B7B AS DateTime), NULL, N'Not in a healthcare setting')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (288, 118, 2, N'5', 96, NULL, NULL, CAST(0x00009D49015C5B7D AS DateTime), NULL, N'Outpatient healthcare setting')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (289, 118, 2, N'2', 97, NULL, NULL, CAST(0x00009D49015C5B7C AS DateTime), NULL, N'Another acute care facility')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (290, 143, 2, N'2', 90, NULL, NULL, CAST(0x00009D49015C6022 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (291, 301, 2, N'5', 83, NULL, NULL, CAST(0x00009D49015C670E AS DateTime), NULL, N'warfarin (Coumadin)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (292, 302, 2, N'4', 84, NULL, NULL, CAST(0x00009D49015C6737 AS DateTime), NULL, N'ASA/dipyridamole (Aggrenox)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (293, 301, 2, N'9', 81, NULL, NULL, CAST(0x00009D49015C670D AS DateTime), NULL, N'full dose LMW heparin')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (294, 145, 2, N'4', 82, NULL, NULL, CAST(0x00009D49015C6068 AS DateTime), NULL, N'Not Documented/UTD')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (295, 302, 2, N'3', 85, NULL, NULL, CAST(0x00009D49015C6736 AS DateTime), NULL, N'aspirin   ')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (296, 302, 2, N'7', 88, NULL, NULL, CAST(0x00009D49015C6738 AS DateTime), NULL, N'ticlopidine (Ticlid)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (297, 143, 2, N'1', 89, NULL, NULL, CAST(0x00009D49015C6021 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (298, 302, 2, N'6', 86, NULL, NULL, CAST(0x00009D49015C6738 AS DateTime), NULL, N'clopidogrel (Plavix)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (299, 137, 2, N'0', 87, NULL, NULL, CAST(0x00009D49015C5EEC AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (300, 119, 2, N'1', 100, NULL, NULL, CAST(0x00009D49015C5B64 AS DateTime), NULL, N'Clinic')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (301, 115, 2, N'1', 113, NULL, NULL, CAST(0x00009D49015C50EB AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (302, 115, 2, N'2', 114, NULL, NULL, CAST(0x00009D49015C5B31 AS DateTime), NULL, N'No')
+
+print 'Processed 300 total records'
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (303, 117, 2, N'1', 111, NULL, NULL, CAST(0x00009D49015C5B4D AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (304, 304, 2, N'3', 112, NULL, NULL, CAST(0x00009D49015C6751 AS DateTime), NULL, N'2 times a day')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (305, 119, 2, N'2', 115, NULL, NULL, CAST(0x00009D49015C5B65 AS DateTime), NULL, N'Court/law enforcement')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (306, 120, 2, N'5', 118, NULL, NULL, CAST(0x00009D49015C5BCF AS DateTime), NULL, N'MM/DD/YYYY HH24:MM')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (307, 119, 2, N'13', 119, NULL, NULL, CAST(0x00009D49015C5B6C AS DateTime), NULL, N'Transfer from a critical access hospital')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (308, 120, 2, N'3', 116, NULL, NULL, CAST(0x00009D49015C5BD0 AS DateTime), NULL, N'MM/DD/YYYY')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (309, 120, 2, N'0', 117, NULL, NULL, CAST(0x00009D49015C5BD1 AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (310, 304, 2, N'2', 110, NULL, NULL, CAST(0x00009D49015C6750 AS DateTime), NULL, N'Every day')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (311, 118, 2, N'4', 103, NULL, NULL, CAST(0x00009D49015C5B7E AS DateTime), NULL, N'Stroke occurred while patient was an inpatient in your hospital')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (312, 118, 2, N'9', 104, NULL, NULL, CAST(0x00009D49015C5B7E AS DateTime), NULL, N'ND or Cannot be determined')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (313, 301, 2, N'8', 101, NULL, NULL, CAST(0x00009D49015C670C AS DateTime), NULL, N'Unfractionated heparin IV')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (314, 303, 2, N'See Appendix 2', 102, NULL, NULL, CAST(0x00009D49015C676B AS DateTime), NULL, N'')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (315, 114, 2, N'3', 105, NULL, NULL, CAST(0x00009D49015C5BB8 AS DateTime), NULL, N'N/A')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (316, 304, 2, N'5', 108, NULL, NULL, CAST(0x00009D49015C6752 AS DateTime), NULL, N'4 times a day')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (317, 114, 2, N'1', 109, NULL, NULL, CAST(0x00009D49015C5BB7 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (318, 304, 2, N'4', 106, NULL, NULL, CAST(0x00009D49015C6752 AS DateTime), NULL, N'3 times a day')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (319, 114, 2, N'2', 107, NULL, NULL, CAST(0x00009D49015C5BB8 AS DateTime), NULL, N'No/ND')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (320, 212, 2, N'308', 320, NULL, NULL, CAST(0x00009D49015C6E0F AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (321, 161, 2, N'1', 533, NULL, NULL, CAST(0x00009D49015C5DEC AS DateTime), NULL, N'Able to ambulate independently (no help from another person) w/ or w/o device')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (322, 161, 2, N'2', 534, NULL, NULL, CAST(0x00009D49015C5DED AS DateTime), NULL, N'With assistance (from person)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (323, 150, 2, N'3', 531, NULL, NULL, CAST(0x00009D49015C600E AS DateTime), NULL, N'MM/DD/YYYY')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (324, 150, 2, N'0', 532, NULL, NULL, CAST(0x00009D49015C600F AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (325, 160, 2, N'5', 535, NULL, NULL, CAST(0x00009D49015C5DD1 AS DateTime), NULL, N'U-Intubated or other physical barrier')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (326, 162, 2, N'3', 538, NULL, NULL, CAST(0x00009D49015C5DDF AS DateTime), NULL, N'1-Inattention or extinction to bilateral stimulation in one modality')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (327, 162, 2, N'4', 539, NULL, NULL, CAST(0x00009D49015C5DE0 AS DateTime), NULL, N'2-Severe hemi-inattention or hemi-inattention to multiple modalities')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (328, 160, 2, N'3', 536, NULL, NULL, CAST(0x00009D49015C5DD0 AS DateTime), NULL, N'1-Mild to moderate slurring of words')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (329, 160, 2, N'4', 537, NULL, NULL, CAST(0x00009D49015C5DD1 AS DateTime), NULL, N'2-Near unintelligible or unable to speak')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (330, 301, 2, N'6', 530, NULL, NULL, CAST(0x00009D49015C670A AS DateTime), NULL, N'clopidogrel (Plavix)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (331, 301, 2, N'7', 523, NULL, NULL, CAST(0x00009D49015C670B AS DateTime), NULL, N'ticlopidine (Ticlid)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (332, 150, 2, N'5', 524, NULL, NULL, CAST(0x00009D49015C600E AS DateTime), NULL, N'MM/DD/YYYY HH24:MM')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (333, 156, 2, N'2', 521, NULL, NULL, CAST(0x00009D49015C5E31 AS DateTime), NULL, N'No/ND')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (334, 153, 2, N'1', 522, NULL, NULL, CAST(0x00009D49015C5E08 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (335, 149, 2, N'2', 525, NULL, NULL, CAST(0x00009D49015C5FE3 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (336, 301, 2, N'4', 528, NULL, NULL, CAST(0x00009D49015C670A AS DateTime), NULL, N'ASA/dipyridamole (Aggrenox)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (337, 301, 2, N'3', 529, NULL, NULL, CAST(0x00009D49015C6709 AS DateTime), NULL, N'aspirin   ')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (338, 301, 2, N'11', 526, NULL, NULL, CAST(0x00009D49015C670C AS DateTime), NULL, N'Other Antiplatelet')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (339, 149, 2, N'1', 527, NULL, NULL, CAST(0x00009D49015C5FE3 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (340, 162, 2, N'2', 540, NULL, NULL, CAST(0x00009D49015C5DDF AS DateTime), NULL, N'0-Normal')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (341, 159, 2, N'2', 553, NULL, NULL, CAST(0x00009D49015C5DAE AS DateTime), NULL, N'0-Normal')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (342, 180, 2, N'2', 554, NULL, NULL, CAST(0x00009D49015C6E71 AS DateTime), NULL, N'1')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (343, 159, 2, N'3', 551, NULL, NULL, CAST(0x00009D49015C5DAE AS DateTime), NULL, N'1-Mild to moderate decrease in sensation')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (344, 300, 2, N'3', 552, NULL, NULL, CAST(0x00009D49015C6723 AS DateTime), NULL, N'2 times a day')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (345, 208, 2, N'200', 555, NULL, NULL, CAST(0x00009D49015C6DAD AS DateTime), NULL, N'200 mg – 25 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (346, 208, 2, N'105', 558, NULL, NULL, CAST(0x00009D49015C6DAB AS DateTime), NULL, N'325 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (347, 208, 2, N'106', 559, NULL, NULL, CAST(0x00009D49015C6DAC AS DateTime), NULL, N'Other')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (348, 208, 2, N'201', 556, NULL, NULL, CAST(0x00009D49015C6DAE AS DateTime), NULL, N'Other')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (349, 208, 2, N'107', 557, NULL, NULL, CAST(0x00009D49015C6DAC AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (350, 300, 2, N'2', 550, NULL, NULL, CAST(0x00009D49015C6722 AS DateTime), NULL, N'Every day')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (351, 160, 2, N'2', 543, NULL, NULL, CAST(0x00009D49015C5DD0 AS DateTime), NULL, N'0-Normal articulation')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (352, 158, 2, N'4', 544, NULL, NULL, CAST(0x00009D49015C5DBE AS DateTime), NULL, N'2-Severe aphasia')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (353, 161, 2, N'3', 541, NULL, NULL, CAST(0x00009D49015C5DED AS DateTime), NULL, N'Unable to ambulate')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (354, 161, 2, N'4', 542, NULL, NULL, CAST(0x00009D49015C5DEE AS DateTime), NULL, N'ND')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (355, 158, 2, N'5', 545, NULL, NULL, CAST(0x00009D49015C5DBF AS DateTime), NULL, N'3-Mute')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (356, 158, 2, N'2', 548, NULL, NULL, CAST(0x00009D49015C5DBC AS DateTime), NULL, N'0-No aphasia')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (357, 159, 2, N'4', 549, NULL, NULL, CAST(0x00009D49015C5DAF AS DateTime), NULL, N'2-Severe to total sensory loss')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (358, 158, 2, N'3', 546, NULL, NULL, CAST(0x00009D49015C5DBE AS DateTime), NULL, N'1-Mild to moderate aphasia')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (359, 300, 2, N'4', 547, NULL, NULL, CAST(0x00009D49015C6723 AS DateTime), NULL, N'3 times a day')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (360, 156, 2, N'1', 520, NULL, NULL, CAST(0x00009D49015C5E30 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (361, 177, 2, N'2', 493, NULL, NULL, CAST(0x00009D49015C6EDF AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (362, 177, 2, N'9', 494, NULL, NULL, CAST(0x00009D49015C6EE0 AS DateTime), NULL, N'Urinary tract infection was not documented')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (363, 178, 2, N'2', 491, NULL, NULL, CAST(0x00009D49015C6F05 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (364, 296, 2, N'2', 492, NULL, NULL, CAST(0x00009D49015C677C AS DateTime), NULL, N'Every day')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (365, 179, 2, N'9', 495, NULL, NULL, CAST(0x00009D49015C6EF4 AS DateTime), NULL, N'Unable to determine')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (366, 179, 2, N'1', 498, NULL, NULL, CAST(0x00009D49015C6EF2 AS DateTime), NULL, N'Yes, patient had catheter in place on arrival')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (367, 179, 2, N'2', 499, NULL, NULL, CAST(0x00009D49015C6EF3 AS DateTime), NULL, N'Yes, but only after admission')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (368, 295, 2, N'See Appendix 2', 496, NULL, NULL, CAST(0x00009D49015C6798 AS DateTime), NULL, N'')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (369, 179, 2, N'3', 497, NULL, NULL, CAST(0x00009D49015C6EF4 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (370, 178, 2, N'1', 490, NULL, NULL, CAST(0x00009D49015C6F05 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (371, 163, 2, N'1', 483, NULL, NULL, CAST(0x00009D49015C5E3D AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (372, 163, 2, N'2', 484, NULL, NULL, CAST(0x00009D49015C5E3E AS DateTime), NULL, N'No/ND')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (373, 165, 2, N'2', 481, NULL, NULL, CAST(0x00009D49015C5E8E AS DateTime), NULL, N'No/CD')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (374, 298, 2, N'1', 482, NULL, NULL, CAST(0x00009D49015C67D3 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (375, 166, 2, N'3', 485, NULL, NULL, CAST(0x00009D49015C5EA7 AS DateTime), NULL, N'MM/DD/YYYY')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (376, 165, 2, N'3', 488, NULL, NULL, CAST(0x00009D49015C5E8F AS DateTime), NULL, N'NC')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (377, 297, 2, N'7', 489, NULL, NULL, CAST(0x00009D49015C67AD AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (378, 166, 2, N'0', 486, NULL, NULL, CAST(0x00009D49015C5EA8 AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (379, 166, 2, N'5', 487, NULL, NULL, CAST(0x00009D49015C5EA7 AS DateTime), NULL, N'MM/DD/YYYY HH24:MM')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (380, 177, 2, N'1', 500, NULL, NULL, CAST(0x00009D49015C6EDF AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (381, 300, 2, N'6', 513, NULL, NULL, CAST(0x00009D49015C6725 AS DateTime), NULL, N'Other')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (382, 155, 2, N'1', 514, NULL, NULL, CAST(0x00009D49015C5E14 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (383, 298, 2, N'2', 511, NULL, NULL, CAST(0x00009D49015C67D4 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (384, 155, 2, N'2', 512, NULL, NULL, CAST(0x00009D49015C5E15 AS DateTime), NULL, N'No/ND')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (385, 153, 2, N'2', 515, NULL, NULL, CAST(0x00009D49015C5E09 AS DateTime), NULL, N'No/ND')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (386, 157, 2, N'2', 518, NULL, NULL, CAST(0x00009D49015C5E22 AS DateTime), NULL, N'No/ND')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (387, 300, 2, N'5', 519, NULL, NULL, CAST(0x00009D49015C6724 AS DateTime), NULL, N'4 times a day')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (388, 300, 2, N'7', 516, NULL, NULL, CAST(0x00009D49015C6725 AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (389, 157, 2, N'1', 517, NULL, NULL, CAST(0x00009D49015C5E22 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (390, 296, 2, N'6', 510, NULL, NULL, CAST(0x00009D49015C677F AS DateTime), NULL, N'Other')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (391, 296, 2, N'7', 503, NULL, NULL, CAST(0x00009D49015C677F AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (392, 297, 2, N'3', 504, NULL, NULL, CAST(0x00009D49015C67AB AS DateTime), NULL, N'2 times a day')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (393, 173, 2, N'5', 501, NULL, NULL, CAST(0x00009D49015C5E72 AS DateTime), NULL, N'MM/DD/YYYY HH24:MM')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (394, 173, 2, N'3', 502, NULL, NULL, CAST(0x00009D49015C5E72 AS DateTime), NULL, N'MM/DD/YYYY')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (395, 297, 2, N'2', 505, NULL, NULL, CAST(0x00009D49015C67AA AS DateTime), NULL, N'Every day')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (396, 296, 2, N'5', 508, NULL, NULL, CAST(0x00009D49015C677E AS DateTime), NULL, N'4 times a day')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (397, 173, 2, N'0', 509, NULL, NULL, CAST(0x00009D49015C5E73 AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (398, 296, 2, N'4', 506, NULL, NULL, CAST(0x00009D49015C677D AS DateTime), NULL, N'3 times a day')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (399, 296, 2, N'3', 507, NULL, NULL, CAST(0x00009D49015C677D AS DateTime), NULL, N'2 times a day')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (400, 208, 2, N'302', 560, NULL, NULL, CAST(0x00009D49015C6DB0 AS DateTime), NULL, N'3 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (401, 180, 2, N'4', 613, NULL, NULL, CAST(0x00009D49015C6E72 AS DateTime), NULL, N'3')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (402, 182, 2, N'5', 614, NULL, NULL, CAST(0x00009D49015C6E86 AS DateTime), NULL, N'4')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (403, 180, 2, N'5', 611, NULL, NULL, CAST(0x00009D49015C6E72 AS DateTime), NULL, N'4')
+
+print 'Processed 400 total records'
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (404, 180, 2, N'3', 612, NULL, NULL, CAST(0x00009D49015C6E71 AS DateTime), NULL, N'2')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (405, 182, 2, N'6', 615, NULL, NULL, CAST(0x00009D49015C6E86 AS DateTime), NULL, N'5')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (406, 182, 2, N'3', 618, NULL, NULL, CAST(0x00009D49015C6E84 AS DateTime), NULL, N'2')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (407, 200, 2, N'5', 619, NULL, NULL, CAST(0x00009D49015C6D1B AS DateTime), NULL, N'MM/DD/YYYY HH24:MM')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (408, 182, 2, N'4', 616, NULL, NULL, CAST(0x00009D49015C6E85 AS DateTime), NULL, N'3')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (409, 182, 2, N'2', 617, NULL, NULL, CAST(0x00009D49015C6E84 AS DateTime), NULL, N'1')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (410, 295, 2, N'12', 610, NULL, NULL, CAST(0x00009D49015C6797 AS DateTime), NULL, N'Fondaparinux (Arixtra)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (411, 295, 2, N'11', 603, NULL, NULL, CAST(0x00009D49015C6794 AS DateTime), NULL, N'Other Antiplatelet')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (412, 295, 2, N'7', 604, NULL, NULL, CAST(0x00009D49015C6794 AS DateTime), NULL, N'ticlopidine (Ticlid)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (413, 295, 2, N'5', 601, NULL, NULL, CAST(0x00009D49015C6797 AS DateTime), NULL, N'warfarin (Coumadin)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (414, 295, 2, N'9', 602, NULL, NULL, CAST(0x00009D49015C6796 AS DateTime), NULL, N'full dose LMW heparin')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (415, 295, 2, N'8', 605, NULL, NULL, CAST(0x00009D49015C6795 AS DateTime), NULL, N'Unfractionated heparin IV')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (416, 182, 2, N'7', 608, NULL, NULL, CAST(0x00009D49015C6E87 AS DateTime), NULL, N'6')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (417, 295, 2, N'13', 609, NULL, NULL, CAST(0x00009D49015C6798 AS DateTime), NULL, N'Other Anticoagulant')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (418, 184, 2, N'5', 606, NULL, NULL, CAST(0x00009D49015C6E99 AS DateTime), NULL, N'4')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (419, 184, 2, N'6', 607, NULL, NULL, CAST(0x00009D49015C6E9A AS DateTime), NULL, N'5')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (420, 200, 2, N'3', 620, NULL, NULL, CAST(0x00009D49015C6D1B AS DateTime), NULL, N'MM/DD/YYYY')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (421, 187, 2, N'1', 633, NULL, NULL, CAST(0x00009D49015C6F84 AS DateTime), NULL, N'Primary')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (422, 187, 2, N'2', 634, NULL, NULL, CAST(0x00009D49015C6F84 AS DateTime), NULL, N'Comprehensive')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (423, 295, 2, N'4', 631, NULL, NULL, CAST(0x00009D49015C6791 AS DateTime), NULL, N'ASA/dipyridamole (Aggrenox)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (424, 187, 2, N'3', 632, NULL, NULL, CAST(0x00009D49015C6F85 AS DateTime), NULL, N'Other')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (425, 294, 2, N'2', 635, NULL, NULL, CAST(0x00009D49015C66F7 AS DateTime), NULL, N'Anticoagulant')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (426, 295, 2, N'3', 638, NULL, NULL, CAST(0x00009D49015C6790 AS DateTime), NULL, N'aspirin   ')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (427, 191, 2, N'1', 639, NULL, NULL, CAST(0x00009D49015C6F3B AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (428, 294, 2, N'1', 636, NULL, NULL, CAST(0x00009D49015C66F7 AS DateTime), NULL, N'Antiplatelet')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (429, 191, 2, N'2', 637, NULL, NULL, CAST(0x00009D49015C6F3C AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (430, 295, 2, N'6', 630, NULL, NULL, CAST(0x00009D49015C6792 AS DateTime), NULL, N'clopidogrel (Plavix)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (431, 197, 2, N'0', 623, NULL, NULL, CAST(0x00009D49015C6CE7 AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (432, 202, 2, N'3', 624, NULL, NULL, CAST(0x00009D49015C6C8E AS DateTime), NULL, N'MM/DD/YYYY')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (433, 288, 2, N'2', 621, NULL, NULL, CAST(0x00009D49015C66D4 AS DateTime), NULL, N'Anticoagulant')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (434, 197, 2, N'3', 622, NULL, NULL, CAST(0x00009D49015C6CE7 AS DateTime), NULL, N'MM/DD/YYYY')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (435, 202, 2, N'0', 625, NULL, NULL, CAST(0x00009D49015C6C8E AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (436, 288, 2, N'1', 628, NULL, NULL, CAST(0x00009D49015C66D3 AS DateTime), NULL, N'Antiplatelet')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (437, 197, 2, N'5', 629, NULL, NULL, CAST(0x00009D49015C6CE6 AS DateTime), NULL, N'MM/DD/YYYY HH24:MM')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (438, 202, 2, N'5', 626, NULL, NULL, CAST(0x00009D49015C6C8D AS DateTime), NULL, N'MM/DD/YYYY HH24:MM')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (439, 200, 2, N'0', 627, NULL, NULL, CAST(0x00009D49015C6D1C AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (440, 184, 2, N'2', 600, NULL, NULL, CAST(0x00009D49015C6E97 AS DateTime), NULL, N'1')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (441, 208, 2, N'101', 573, NULL, NULL, CAST(0x00009D49015C6DA9 AS DateTime), NULL, N'81 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (442, 286, 2, N'1', 574, NULL, NULL, CAST(0x00009D49015C66C2 AS DateTime), NULL, N'Antiplatelet')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (443, 208, 2, N'102', 571, NULL, NULL, CAST(0x00009D49015C6DA9 AS DateTime), NULL, N'125 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (444, 208, 2, N'103', 572, NULL, NULL, CAST(0x00009D49015C6DAA AS DateTime), NULL, N'162 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (445, 208, 2, N'100', 575, NULL, NULL, CAST(0x00009D49015C6DA8 AS DateTime), NULL, N'75 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (446, 208, 2, N'702', 578, NULL, NULL, CAST(0x00009D49015C6DCC AS DateTime), NULL, N'7.5 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (447, 208, 2, N'700', 579, NULL, NULL, CAST(0x00009D49015C6DCB AS DateTime), NULL, N'2.5 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (448, 208, 2, N'703', 576, NULL, NULL, CAST(0x00009D49015C6DCC AS DateTime), NULL, N'10 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (449, 209, 2, N'1', 577, NULL, NULL, CAST(0x00009D49015C6D97 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (450, 205, 2, N'5', 570, NULL, NULL, CAST(0x00009D49015C6CC1 AS DateTime), NULL, N'MM/DD/YYYY HH24:MM')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (451, 208, 2, N'202', 563, NULL, NULL, CAST(0x00009D49015C6DAE AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (452, 208, 2, N'300', 564, NULL, NULL, CAST(0x00009D49015C6DAF AS DateTime), NULL, N'2 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (453, 208, 2, N'303', 561, NULL, NULL, CAST(0x00009D49015C6DC3 AS DateTime), NULL, N'4 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (454, 208, 2, N'301', 562, NULL, NULL, CAST(0x00009D49015C6DB0 AS DateTime), NULL, N'2.5 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (455, 208, 2, N'104', 565, NULL, NULL, CAST(0x00009D49015C6DAB AS DateTime), NULL, N'300 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (456, 205, 2, N'3', 568, NULL, NULL, CAST(0x00009D49015C6CC2 AS DateTime), NULL, N'MM/DD/YYYY')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (457, 287, 2, N'1', 569, NULL, NULL, CAST(0x00009D49015C66E4 AS DateTime), NULL, N'Antiplatelet')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (458, 205, 2, N'0', 566, NULL, NULL, CAST(0x00009D49015C6CC3 AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (459, 286, 2, N'2', 567, NULL, NULL, CAST(0x00009D49015C66C3 AS DateTime), NULL, N'Anticoagulant')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (460, 208, 2, N'701', 580, NULL, NULL, CAST(0x00009D49015C6DCB AS DateTime), NULL, N'5 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (461, 208, 2, N'501', 593, NULL, NULL, CAST(0x00009D49015C6DC9 AS DateTime), NULL, N'Other')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (462, 208, 2, N'402', 594, NULL, NULL, CAST(0x00009D49015C6DC8 AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (463, 208, 2, N'305', 591, NULL, NULL, CAST(0x00009D49015C6DC4 AS DateTime), NULL, N'6 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (464, 208, 2, N'500', 592, NULL, NULL, CAST(0x00009D49015C6DC9 AS DateTime), NULL, N'250 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (465, 208, 2, N'400', 595, NULL, NULL, CAST(0x00009D49015C6DC7 AS DateTime), NULL, N'75 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (466, 184, 2, N'3', 598, NULL, NULL, CAST(0x00009D49015C6E98 AS DateTime), NULL, N'2')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (467, 184, 2, N'4', 599, NULL, NULL, CAST(0x00009D49015C6E99 AS DateTime), NULL, N'3')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (468, 208, 2, N'401', 596, NULL, NULL, CAST(0x00009D49015C6DC7 AS DateTime), NULL, N'Other')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (469, 287, 2, N'2', 597, NULL, NULL, CAST(0x00009D49015C66E5 AS DateTime), NULL, N'Anticoagulant')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (470, 208, 2, N'304', 590, NULL, NULL, CAST(0x00009D49015C6DC4 AS DateTime), NULL, N'5 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (471, 210, 2, N'100', 583, NULL, NULL, CAST(0x00009D49015C6DDE AS DateTime), NULL, N'75 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (472, 209, 2, N'2', 584, NULL, NULL, CAST(0x00009D49015C6D98 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (473, 210, 2, N'101', 581, NULL, NULL, CAST(0x00009D49015C6DDF AS DateTime), NULL, N'81 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (474, 210, 2, N'102', 582, NULL, NULL, CAST(0x00009D49015C6DDF AS DateTime), NULL, N'125 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (475, 284, 2, N'3', 585, NULL, NULL, CAST(0x00009D49015C66B1 AS DateTime), NULL, N'NC')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (476, 208, 2, N'308', 588, NULL, NULL, CAST(0x00009D49015C6DC6 AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (477, 208, 2, N'306', 589, NULL, NULL, CAST(0x00009D49015C6DC5 AS DateTime), NULL, N'7.5 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (478, 208, 2, N'502', 586, NULL, NULL, CAST(0x00009D49015C6DCA AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (479, 208, 2, N'307', 587, NULL, NULL, CAST(0x00009D49015C6DC6 AS DateTime), NULL, N'Other')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (480, 165, 2, N'1', 480, NULL, NULL, CAST(0x00009D49015C5E8E AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (481, 210, 2, N'703', 373, NULL, NULL, CAST(0x00009D49015C6DF1 AS DateTime), NULL, N'10 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (482, 210, 2, N'701', 374, NULL, NULL, CAST(0x00009D49015C6DF0 AS DateTime), NULL, N'5 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (483, 211, 2, N'104', 371, NULL, NULL, CAST(0x00009D49015C6E28 AS DateTime), NULL, N'300 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (484, 210, 2, N'702', 372, NULL, NULL, CAST(0x00009D49015C6DF0 AS DateTime), NULL, N'7.5 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (485, 210, 2, N'502', 375, NULL, NULL, CAST(0x00009D49015C6DEF AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (486, 211, 2, N'103', 378, NULL, NULL, CAST(0x00009D49015C6E28 AS DateTime), NULL, N'162 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (487, 211, 2, N'101', 379, NULL, NULL, CAST(0x00009D49015C6E26 AS DateTime), NULL, N'81 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (488, 210, 2, N'700', 376, NULL, NULL, CAST(0x00009D49015C6DEF AS DateTime), NULL, N'2.5 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (489, 211, 2, N'102', 377, NULL, NULL, CAST(0x00009D49015C6E27 AS DateTime), NULL, N'125 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (490, 211, 2, N'300', 370, NULL, NULL, CAST(0x00009D49015C6E2D AS DateTime), NULL, N'2 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (491, 211, 2, N'107', 363, NULL, NULL, CAST(0x00009D49015C6E2A AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (492, 211, 2, N'105', 364, NULL, NULL, CAST(0x00009D49015C6E29 AS DateTime), NULL, N'325 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (493, 211, 2, N'200', 361, NULL, NULL, CAST(0x00009D49015C6E2B AS DateTime), NULL, N'200 mg – 25 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (494, 211, 2, N'201', 362, NULL, NULL, CAST(0x00009D49015C6E2B AS DateTime), NULL, N'Other')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (495, 211, 2, N'106', 365, NULL, NULL, CAST(0x00009D49015C6E29 AS DateTime), NULL, N'Other')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (496, 211, 2, N'301', 368, NULL, NULL, CAST(0x00009D49015C6E2D AS DateTime), NULL, N'2.5 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (497, 211, 2, N'202', 369, NULL, NULL, CAST(0x00009D49015C6E2C AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (498, 211, 2, N'302', 366, NULL, NULL, CAST(0x00009D49015C6E2E AS DateTime), NULL, N'3 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (499, 211, 2, N'303', 367, NULL, NULL, CAST(0x00009D49015C6E2E AS DateTime), NULL, N'4 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (500, 284, 2, N'2', 380, NULL, NULL, CAST(0x00009D49015C66B0 AS DateTime), NULL, N'No/ND')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (501, 238, 2, N'9', 393, NULL, NULL, CAST(0x00009D49015C7231 AS DateTime), NULL, N'Urinary tract infection was not documented')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (502, 277, 2, N'1', 394, NULL, NULL, CAST(0x00009D49015C6956 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (503, 241, 2, N'4', 391, NULL, NULL, CAST(0x00009D49015C7029 AS DateTime), NULL, N'Tricare (Champus)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (504, 241, 2, N'5', 392, NULL, NULL, CAST(0x00009D49015C7029 AS DateTime), NULL, N'Uninsured/Indigent')
+
+print 'Processed 500 total records'
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (505, 237, 2, N'1', 395, NULL, NULL, CAST(0x00009D49015C7242 AS DateTime), NULL, N'Yes, patient had catheter in place on arrival')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (506, 236, 2, N'1', 398, NULL, NULL, CAST(0x00009D49015C721E AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (507, 238, 2, N'1', 399, NULL, NULL, CAST(0x00009D49015C7230 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (508, 236, 2, N'2', 396, NULL, NULL, CAST(0x00009D49015C721F AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (509, 277, 2, N'2', 397, NULL, NULL, CAST(0x00009D49015C6956 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (510, 241, 2, N'6', 390, NULL, NULL, CAST(0x00009D49015C702A AS DateTime), NULL, N'Other')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (511, 241, 2, N'2', 383, NULL, NULL, CAST(0x00009D49015C7028 AS DateTime), NULL, N'Commercial')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (512, 241, 2, N'3', 384, NULL, NULL, CAST(0x00009D49015C7028 AS DateTime), NULL, N'HMO')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (513, 211, 2, N'100', 381, NULL, NULL, CAST(0x00009D49015C6E26 AS DateTime), NULL, N'75 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (514, 212, 2, N'701', 382, NULL, NULL, CAST(0x00009D49015C6E14 AS DateTime), NULL, N'5 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (515, 241, 2, N'1', 385, NULL, NULL, CAST(0x00009D49015C7027 AS DateTime), NULL, N'Blue Cross/Blue Shield')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (516, 274, 2, N'2', 388, NULL, NULL, CAST(0x00009D49015C6921 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (517, 274, 2, N'1', 389, NULL, NULL, CAST(0x00009D49015C6921 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (518, 275, 2, N'2', 386, NULL, NULL, CAST(0x00009D49015C6945 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (519, 275, 2, N'1', 387, NULL, NULL, CAST(0x00009D49015C6944 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (520, 210, 2, N'202', 360, NULL, NULL, CAST(0x00009D49015C6DE5 AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (521, 212, 2, N'107', 333, NULL, NULL, CAST(0x00009D49015C6E07 AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (522, 212, 2, N'303', 334, NULL, NULL, CAST(0x00009D49015C6E0C AS DateTime), NULL, N'4 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (523, 212, 2, N'200', 331, NULL, NULL, CAST(0x00009D49015C6E08 AS DateTime), NULL, N'200 mg – 25 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (524, 212, 2, N'106', 332, NULL, NULL, CAST(0x00009D49015C6E07 AS DateTime), NULL, N'Other')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (525, 212, 2, N'304', 335, NULL, NULL, CAST(0x00009D49015C6E0C AS DateTime), NULL, N'5 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (526, 212, 2, N'301', 338, NULL, NULL, CAST(0x00009D49015C6E0A AS DateTime), NULL, N'2.5 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (527, 211, 2, N'304', 339, NULL, NULL, CAST(0x00009D49015C6E2F AS DateTime), NULL, N'5 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (528, 212, 2, N'302', 336, NULL, NULL, CAST(0x00009D49015C6E0B AS DateTime), NULL, N'3 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (529, 212, 2, N'300', 337, NULL, NULL, CAST(0x00009D49015C6E0A AS DateTime), NULL, N'2 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (530, 212, 2, N'202', 330, NULL, NULL, CAST(0x00009D49015C6E09 AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (531, 212, 2, N'502', 323, NULL, NULL, CAST(0x00009D49015C6E12 AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (532, 212, 2, N'700', 324, NULL, NULL, CAST(0x00009D49015C6E13 AS DateTime), NULL, N'2.5 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (533, 212, 2, N'306', 321, NULL, NULL, CAST(0x00009D49015C6E0D AS DateTime), NULL, N'7.5 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (534, 212, 2, N'307', 322, NULL, NULL, CAST(0x00009D49015C6E0E AS DateTime), NULL, N'Other')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (535, 212, 2, N'501', 325, NULL, NULL, CAST(0x00009D49015C6E12 AS DateTime), NULL, N'Other')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (536, 212, 2, N'305', 328, NULL, NULL, CAST(0x00009D49015C6E0D AS DateTime), NULL, N'6 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (537, 212, 2, N'201', 329, NULL, NULL, CAST(0x00009D49015C6E08 AS DateTime), NULL, N'Other')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (538, 212, 2, N'402', 326, NULL, NULL, CAST(0x00009D49015C6E10 AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (539, 212, 2, N'500', 327, NULL, NULL, CAST(0x00009D49015C6E11 AS DateTime), NULL, N'250 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (540, 210, 2, N'307', 340, NULL, NULL, CAST(0x00009D49015C6DEA AS DateTime), NULL, N'Other')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (541, 210, 2, N'106', 353, NULL, NULL, CAST(0x00009D49015C6DE3 AS DateTime), NULL, N'Other')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (542, 210, 2, N'104', 354, NULL, NULL, CAST(0x00009D49015C6DE1 AS DateTime), NULL, N'300 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (543, 210, 2, N'107', 351, NULL, NULL, CAST(0x00009D49015C6DE3 AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (544, 210, 2, N'200', 352, NULL, NULL, CAST(0x00009D49015C6DE4 AS DateTime), NULL, N'200 mg – 25 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (545, 210, 2, N'105', 355, NULL, NULL, CAST(0x00009D49015C6DE2 AS DateTime), NULL, N'325 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (546, 210, 2, N'300', 358, NULL, NULL, CAST(0x00009D49015C6DE6 AS DateTime), NULL, N'2 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (547, 210, 2, N'201', 359, NULL, NULL, CAST(0x00009D49015C6DE5 AS DateTime), NULL, N'Other')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (548, 210, 2, N'301', 356, NULL, NULL, CAST(0x00009D49015C6DE7 AS DateTime), NULL, N'2.5 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (549, 210, 2, N'302', 357, NULL, NULL, CAST(0x00009D49015C6DE7 AS DateTime), NULL, N'3 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (550, 210, 2, N'303', 350, NULL, NULL, CAST(0x00009D49015C6DE8 AS DateTime), NULL, N'4 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (551, 210, 2, N'304', 343, NULL, NULL, CAST(0x00009D49015C6DE8 AS DateTime), NULL, N'5 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (552, 210, 2, N'305', 344, NULL, NULL, CAST(0x00009D49015C6DE9 AS DateTime), NULL, N'6 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (553, 210, 2, N'308', 341, NULL, NULL, CAST(0x00009D49015C6DEB AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (554, 210, 2, N'306', 342, NULL, NULL, CAST(0x00009D49015C6DEA AS DateTime), NULL, N'7.5 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (555, 210, 2, N'500', 345, NULL, NULL, CAST(0x00009D49015C6DED AS DateTime), NULL, N'250 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (556, 210, 2, N'400', 348, NULL, NULL, CAST(0x00009D49015C6DEC AS DateTime), NULL, N'75 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (557, 210, 2, N'401', 349, NULL, NULL, CAST(0x00009D49015C6DEC AS DateTime), NULL, N'Other')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (558, 210, 2, N'501', 346, NULL, NULL, CAST(0x00009D49015C6DEE AS DateTime), NULL, N'Other')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (559, 210, 2, N'402', 347, NULL, NULL, CAST(0x00009D49015C6DED AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (560, 238, 2, N'2', 400, NULL, NULL, CAST(0x00009D49015C7231 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (561, 235, 2, N'1', 453, NULL, NULL, CAST(0x00009D49015C71FA AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (562, 234, 2, N'1', 454, NULL, NULL, CAST(0x00009D49015C720D AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (563, 279, 2, N'1', 451, NULL, NULL, CAST(0x00009D49015C68C8 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (564, 234, 2, N'2', 452, NULL, NULL, CAST(0x00009D49015C720D AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (565, 278, 2, N'2', 455, NULL, NULL, CAST(0x00009D49015C68DA AS DateTime), NULL, N'No/ND')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (566, 228, 2, N'2', 458, NULL, NULL, CAST(0x00009D49015C71EA AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (567, 279, 2, N'2', 459, NULL, NULL, CAST(0x00009D49015C68C9 AS DateTime), NULL, N'No/ND')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (568, 278, 2, N'1', 456, NULL, NULL, CAST(0x00009D49015C68DA AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (569, 229, 2, N'6', 457, NULL, NULL, CAST(0x00009D49015C7268 AS DateTime), NULL, N'Severe disability; bedridden, incontinent and requiring constant nursing care and attention')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (570, 229, 2, N'7', 450, NULL, NULL, CAST(0x00009D49015C7269 AS DateTime), NULL, N'Dead')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (571, 215, 2, N'3', 443, NULL, NULL, CAST(0x00009D49015C6D63 AS DateTime), NULL, N'Combination')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (572, 215, 2, N'1', 444, NULL, NULL, CAST(0x00009D49015C6D61 AS DateTime), NULL, N'Concurrently')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (573, 212, 2, N'703', 441, NULL, NULL, CAST(0x00009D49015C6E15 AS DateTime), NULL, N'10 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (574, 215, 2, N'2', 442, NULL, NULL, CAST(0x00009D49015C6D62 AS DateTime), NULL, N'Retrospectively')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (575, 214, 2, N'0', 445, NULL, NULL, CAST(0x00009D49015C6D3E AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (576, 278, 2, N'3', 448, NULL, NULL, CAST(0x00009D49015C68DB AS DateTime), NULL, N'NC')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (577, 230, 2, N'1', 449, NULL, NULL, CAST(0x00009D49015C7254 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (578, 283, 2, N'2', 446, NULL, NULL, CAST(0x00009D49015C67E5 AS DateTime), NULL, N'No/ND')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (579, 230, 2, N'2', 447, NULL, NULL, CAST(0x00009D49015C7255 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (580, 228, 2, N'1', 460, NULL, NULL, CAST(0x00009D49015C71E9 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (581, 167, 2, N'2', 473, NULL, NULL, CAST(0x00009D49015C5EC8 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (582, 169, 2, N'3', 474, NULL, NULL, CAST(0x00009D49015C5E58 AS DateTime), NULL, N'MM/DD/YYYY')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (583, 297, 2, N'5', 471, NULL, NULL, CAST(0x00009D49015C67AC AS DateTime), NULL, N'4 times a day')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (584, 167, 2, N'1', 472, NULL, NULL, CAST(0x00009D49015C5EC8 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (585, 169, 2, N'0', 475, NULL, NULL, CAST(0x00009D49015C5E59 AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (586, 297, 2, N'4', 478, NULL, NULL, CAST(0x00009D49015C67AB AS DateTime), NULL, N'3 times a day')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (587, 297, 2, N'6', 479, NULL, NULL, CAST(0x00009D49015C67AD AS DateTime), NULL, N'Other')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (588, 169, 2, N'5', 476, NULL, NULL, CAST(0x00009D49015C5E58 AS DateTime), NULL, N'MM/DD/YYYY HH24:MM')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (589, 168, 2, N'3', 477, NULL, NULL, CAST(0x00009D49015C5EB7 AS DateTime), NULL, N'Not available')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (590, 168, 2, N'2', 470, NULL, NULL, CAST(0x00009D49015C5EB6 AS DateTime), NULL, N'No Hemorrhage       ')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (591, 229, 2, N'4', 463, NULL, NULL, CAST(0x00009D49015C7267 AS DateTime), NULL, N'Moderate disability; requiring some help, but able to walk without assistance and unable to attend to own bodily needs without assistance')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (592, 229, 2, N'5', 464, NULL, NULL, CAST(0x00009D49015C7268 AS DateTime), NULL, N'Moderately severe disability, unable to walk without assistance and unable to attend to own bodily needs without assistance')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (593, 280, 2, N'1', 461, NULL, NULL, CAST(0x00009D49015C68EC AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (594, 279, 2, N'3', 462, NULL, NULL, CAST(0x00009D49015C68C9 AS DateTime), NULL, N'NC')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (595, 229, 2, N'3', 465, NULL, NULL, CAST(0x00009D49015C7266 AS DateTime), NULL, N'Slight disability; unable to carry out previous activities, but able to look after own affairs without assistance')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (596, 210, 2, N'103', 468, NULL, NULL, CAST(0x00009D49015C6DE1 AS DateTime), NULL, N'162 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (597, 168, 2, N'1', 469, NULL, NULL, CAST(0x00009D49015C5EB6 AS DateTime), NULL, N'Hemorrhage ')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (598, 229, 2, N'1', 466, NULL, NULL, CAST(0x00009D49015C7265 AS DateTime), NULL, N'No symptoms at all')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (599, 229, 2, N'2', 467, NULL, NULL, CAST(0x00009D49015C7266 AS DateTime), NULL, N'No significant disability despite symptoms; able to carry out all usual duties and activities')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (600, 212, 2, N'702', 440, NULL, NULL, CAST(0x00009D49015C6E14 AS DateTime), NULL, N'7.5 mg')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (601, 263, 2, N'2', 413, NULL, NULL, CAST(0x00009D49015C6858 AS DateTime), NULL, N'No/ND')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (602, 261, 2, N'3', 414, NULL, NULL, CAST(0x00009D49015C6C6C AS DateTime), NULL, N'MM/DD/YYYY')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (603, 263, 2, N'3', 411, NULL, NULL, CAST(0x00009D49015C6859 AS DateTime), NULL, N'NC')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (604, 263, 2, N'1', 412, NULL, NULL, CAST(0x00009D49015C6858 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (605, 272, 2, N'2', 415, NULL, NULL, CAST(0x00009D49015C68B7 AS DateTime), NULL, N'No/ND')
+
+print 'Processed 600 total records'
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (606, 273, 2, N'2', 418, NULL, NULL, CAST(0x00009D49015C6932 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (607, 273, 2, N'1', 419, NULL, NULL, CAST(0x00009D49015C6932 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (608, 272, 2, N'1', 416, NULL, NULL, CAST(0x00009D49015C68B6 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (609, 272, 2, N'3', 417, NULL, NULL, CAST(0x00009D49015C68B8 AS DateTime), NULL, N'NC')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (610, 265, 2, N'1', 410, NULL, NULL, CAST(0x00009D49015C68A3 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (611, 237, 2, N'3', 403, NULL, NULL, CAST(0x00009D49015C7243 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (612, 262, 2, N'3', 404, NULL, NULL, CAST(0x00009D49015C686C AS DateTime), NULL, N'ND')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (613, 237, 2, N'9', 401, NULL, NULL, CAST(0x00009D49015C7244 AS DateTime), NULL, N'Unable to determine')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (614, 237, 2, N'2', 402, NULL, NULL, CAST(0x00009D49015C7243 AS DateTime), NULL, N'Yes, but only after admission')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (615, 265, 2, N'3', 405, NULL, NULL, CAST(0x00009D49015C68A4 AS DateTime), NULL, N'NC')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (616, 262, 2, N'1', 408, NULL, NULL, CAST(0x00009D49015C686B AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (617, 265, 2, N'2', 409, NULL, NULL, CAST(0x00009D49015C68A3 AS DateTime), NULL, N'No/ND')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (618, 262, 2, N'2', 406, NULL, NULL, CAST(0x00009D49015C686B AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (619, 261, 2, N'0', 407, NULL, NULL, CAST(0x00009D49015C6C6C AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (620, 270, 2, N'1', 420, NULL, NULL, CAST(0x00009D49015C6847 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (621, 281, 2, N'1', 433, NULL, NULL, CAST(0x00009D49015C6910 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (622, 282, 2, N'1', 434, NULL, NULL, CAST(0x00009D49015C68FF AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (623, 280, 2, N'4', 431, NULL, NULL, CAST(0x00009D49015C68EE AS DateTime), NULL, N'Not Applicable')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (624, 280, 2, N'2', 432, NULL, NULL, CAST(0x00009D49015C68ED AS DateTime), NULL, N'No/ND')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (625, 281, 2, N'2', 435, NULL, NULL, CAST(0x00009D49015C6910 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (626, 214, 2, N'3', 438, NULL, NULL, CAST(0x00009D49015C6D3D AS DateTime), NULL, N'MM/DD/YYYY')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (627, 283, 2, N'3', 439, NULL, NULL, CAST(0x00009D49015C67E6 AS DateTime), NULL, N'NC')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (628, 283, 2, N'1', 436, NULL, NULL, CAST(0x00009D49015C67E4 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (629, 214, 2, N'5', 437, NULL, NULL, CAST(0x00009D49015C6D3D AS DateTime), NULL, N'MM/DD/YYYY HH24:MM')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (630, 216, 2, N'2', 430, NULL, NULL, CAST(0x00009D49015C6D87 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (631, 271, 2, N'2', 423, NULL, NULL, CAST(0x00009D49015C6836 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (632, 271, 2, N'1', 424, NULL, NULL, CAST(0x00009D49015C6836 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (633, 261, 2, N'5', 421, NULL, NULL, CAST(0x00009D49015C6C6B AS DateTime), NULL, N'MM/DD/YYYY HH24:MM')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (634, 270, 2, N'2', 422, NULL, NULL, CAST(0x00009D49015C6847 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (635, 235, 2, N'2', 425, NULL, NULL, CAST(0x00009D49015C71FB AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (636, 217, 2, N'1', 428, NULL, NULL, CAST(0x00009D49015C6D74 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (637, 216, 2, N'1', 429, NULL, NULL, CAST(0x00009D49015C6D86 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (638, 217, 2, N'2', 426, NULL, NULL, CAST(0x00009D49015C6D75 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (639, 282, 2, N'2', 427, NULL, NULL, CAST(0x00009D49015C68FF AS DateTime), NULL, N'No')
+
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (640, 348, 2, N'0', 640, NULL, NULL, CAST(0x00009D49015C6BA8 AS DateTime), NULL, N'None')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (641, 348, 2, N'3', 641, NULL, NULL, CAST(0x00009D49015C6BA8 AS DateTime), NULL, N'MM/DD/YYYY')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (642, 348, 2, N'5', 642, NULL, NULL, CAST(0x00009D49015C6BA8 AS DateTime), NULL, N'MM/DD/YYYY HH24:MM')
+
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (643, 349, 2, N'0', 643, NULL, NULL, CAST(0x00009D49015C6BA8 AS DateTime), NULL, N'None')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (644, 349, 2, N'3', 644, NULL, NULL, CAST(0x00009D49015C6BA8 AS DateTime), NULL, N'MM/DD/YYYY')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (645, 349, 2, N'5', 645, NULL, NULL, CAST(0x00009D49015C6BA8 AS DateTime), NULL, N'MM/DD/YYYY HH24:MM')
+
+-- multivalues
+
+--INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (651, 353, 2, N'1', 652, NULL, NULL, CAST(0x00009D7B015AC5BA AS DateTime), NULL, N'Yes')
+--INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (652, 353, 2, N'2', 653, NULL, NULL, CAST(0x00009D7B015AC5BA AS DateTime), NULL, N'No')
+--INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (653, 354, 2, N'1', 654, NULL, NULL, CAST(0x00009D7B015B2B14 AS DateTime), NULL, N'Yes')
+--INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (654, 354, 2, N'2', 655, NULL, NULL, CAST(0x00009D7B015B2B14 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (655, 128, 2, N'1', 704, NULL, NULL, CAST(0x00009D7C0005ED9E AS DateTime), NULL, N'NeuroAdmission')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (656, 128, 2, N'2', 705, NULL, NULL, CAST(0x00009D7C0005ED9F AS DateTime), NULL, N'OtherServiceAdmission')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (657, 128, 2, N'3', 702, NULL, NULL, CAST(0x00009D7C0005ED9F AS DateTime), NULL, N'StrokeConsult')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (658, 128, 2, N'4', 703, NULL, NULL, CAST(0x00009D7C0005EDA0 AS DateTime), NULL, N'NoStrokeConsult')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (659, 128, 2, N'5', 706, NULL, NULL, CAST(0x00009D7C0005EDA0 AS DateTime), NULL, N'InStrokeUnit')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (660, 128, 2, N'6', 709, NULL, NULL, CAST(0x00009D7C0005EDA1 AS DateTime), NULL, N'NotinStrokeUnit')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (661, 128, 2, N'7', 710, NULL, NULL, CAST(0x00009D7C0005EDA1 AS DateTime), NULL, N'UnabletoDetermine')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (662, 125, 2, N'1', 707, NULL, NULL, CAST(0x00009D7C0005EDEF AS DateTime), NULL, N'White')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (663, 125, 2, N'2', 708, NULL, NULL, CAST(0x00009D7C0005EDEF AS DateTime), NULL, N'BlackorAfricanAmerican')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (664, 125, 2, N'3', 695, NULL, NULL, CAST(0x00009D7C0005EDF0 AS DateTime), NULL, N'Asian')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (665, 125, 2, N'4', 696, NULL, NULL, CAST(0x00009D7C0005EDF1 AS DateTime), NULL, N'AmericanIndian/AlaskaNative')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (666, 125, 2, N'5', 693, NULL, NULL, CAST(0x00009D7C0005EDF1 AS DateTime), NULL, N'NativeHawaiian/PacificIslander')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (667, 125, 2, N'6', 694, NULL, NULL, CAST(0x00009D7C0005EDF2 AS DateTime), NULL, N'UTD')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (668, 125, 2, N'7', 697, NULL, NULL, CAST(0x00009D7C0005EDF2 AS DateTime), NULL, N'Other')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (669, 109, 2, N'1', 700, NULL, NULL, CAST(0x00009D7C0005EE0C AS DateTime), NULL, N'Medicare')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (670, 109, 2, N'5', 701, NULL, NULL, CAST(0x00009D7C0005EE0C AS DateTime), NULL, N'Medicaid')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (671, 109, 2, N'2', 698, NULL, NULL, CAST(0x00009D7C0005EE0D AS DateTime), NULL, N'Private/VA/Champus/OtherInsurance')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (672, 109, 2, N'3', 699, NULL, NULL, CAST(0x00009D7C0005EE0D AS DateTime), NULL, N'SelfPay/NoInsurance')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (673, 109, 2, N'4', 722, NULL, NULL, CAST(0x00009D7C0005EE0E AS DateTime), NULL, N'ND')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (674, 94, 2, N'1', 723, NULL, NULL, CAST(0x00009D7C0005EE1A AS DateTime), NULL, N'AtrialFib/Flutter')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (675, 94, 2, N'14', 720, NULL, NULL, CAST(0x00009D7C0005EE1B AS DateTime), NULL, N'Currentpregnancy(upto6weekspostpartum)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (676, 94, 2, N'12', 721, NULL, NULL, CAST(0x00009D7C0005EE1C AS DateTime), NULL, N'HF')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (677, 94, 2, N'16', 724, NULL, NULL, CAST(0x00009D7C0005EE1C AS DateTime), NULL, N'PreviousTIA')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (678, 94, 2, N'13', 727, NULL, NULL, CAST(0x00009D7C0005EE1D AS DateTime), NULL, N'SickleCell')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (679, 94, 2, N'4', 728, NULL, NULL, CAST(0x00009D7C0005EE1D AS DateTime), NULL, N'CAD/priorMI')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (680, 94, 2, N'6', 725, NULL, NULL, CAST(0x00009D7C0005EE1E AS DateTime), NULL, N'DiabetesMellitus')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (681, 94, 2, N'8', 726, NULL, NULL, CAST(0x00009D7C0005EE1F AS DateTime), NULL, N'Hypertension')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (682, 94, 2, N'7', 713, NULL, NULL, CAST(0x00009D7C0005EE20 AS DateTime), NULL, N'')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (683, 94, 2, N'9', 714, NULL, NULL, CAST(0x00009D7C0005EE20 AS DateTime), NULL, N'Smoker')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (684, 94, 2, N'5', 711, NULL, NULL, CAST(0x00009D7C0005EE21 AS DateTime), NULL, N'CarotidStenosis')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (685, 94, 2, N'10', 712, NULL, NULL, CAST(0x00009D7C0005EE21 AS DateTime), NULL, N'Dyslipidemia')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (686, 94, 2, N'15', 715, NULL, NULL, CAST(0x00009D7C0005EE22 AS DateTime), NULL, N'PreviousStroke')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (687, 94, 2, N'2', 718, NULL, NULL, CAST(0x00009D7C0005EE23 AS DateTime), NULL, N'Prostheticheartvalve')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (688, 89, 2, N'1', 719, NULL, NULL, CAST(0x00009D7C0005EE6C AS DateTime), NULL, N'Weakness/Paresis')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (689, 89, 2, N'2', 716, NULL, NULL, CAST(0x00009D7C0005EE6C AS DateTime), NULL, N'AlteredLevelofConsciousness')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (690, 89, 2, N'3', 717, NULL, NULL, CAST(0x00009D7C0005EE6D AS DateTime), NULL, N'Aphasia')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (691, 140, 2, N'1', 692, NULL, NULL, CAST(0x00009D7C0005F0AC AS DateTime), NULL, N'SBP>185orDBP>110mmHgdespitetreatment')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (692, 140, 2, N'2', 667, NULL, NULL, CAST(0x00009D7C0005F0AD AS DateTime), NULL, N'Seizureatonset')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (693, 140, 2, N'3', 668, NULL, NULL, CAST(0x00009D7C0005F0AD AS DateTime), NULL, N'Recentsurgery/trauma(<15days)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (694, 140, 2, N'4', 665, NULL, NULL, CAST(0x00009D7C0005F0AE AS DateTime), NULL, N'Recentintracranialorspinalsurgery,headtrauma,orstroke(<3mo.)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (695, 140, 2, N'5', 666, NULL, NULL, CAST(0x00009D7C0005F0AE AS DateTime), NULL, N'Historyofintracranialhemorrhageorbrainaneurysmorvascularmalformationorbraintumor')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (696, 140, 2, N'6', 669, NULL, NULL, CAST(0x00009D7C0005F0AF AS DateTime), NULL, N'Activeinternalbleeding(<22days)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (697, 140, 2, N'7', 672, NULL, NULL, CAST(0x00009D7C0005F0B0 AS DateTime), NULL, N'Platelets<100,000,PTT>40secafterheparinuse,orPT>15orINR>1.7,orknownbleedingdiathesis')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (698, 140, 2, N'8', 673, NULL, NULL, CAST(0x00009D7C0005F0B1 AS DateTime), NULL, N'Suspicionofsubarachnoidhemorrhage')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (699, 140, 2, N'9', 670, NULL, NULL, CAST(0x00009D7C0005F0B1 AS DateTime), NULL, N'CTfindings(ICH,SAH,ormajorinfarctsigns)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (700, 139, 2, N'6', 671, NULL, NULL, CAST(0x00009D7C0005F0BD AS DateTime), NULL, N'Advancedage')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (701, 139, 2, N'10', 658, NULL, NULL, CAST(0x00009D7C0005F0BE AS DateTime), NULL, N'Care-teamunabletodetermineeligibility')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (702, 139, 2, N'2', 659, NULL, NULL, CAST(0x00009D7C0005F0BF AS DateTime), NULL, N'Glucose<50or>400mg/dl')
+--INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (703, 139, 2, N'4', 656, NULL, NULL, CAST(0x00009D7C0005F0BF AS DateTime), NULL, N'Increasedriskofbleedingduetocomorbidconditions(seecodinginstructions)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (704, 139, 2, N'11', 657, NULL, NULL, CAST(0x00009D7C0005F0C0 AS DateTime), NULL, N'IVorIAtPAgivenatoutsidehospital')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (705, 139, 2, N'3', 660, NULL, NULL, CAST(0x00009D7C0005F0C0 AS DateTime), NULL, N'Leftheartthrombus')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (706, 139, 2, N'8', 663, NULL, NULL, CAST(0x00009D7C0005F0C1 AS DateTime), NULL, N'Lifeexpectancy<1yearorsevereco-morbidillnessorCMOonadmission')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (707, 139, 2, N'5', 664, NULL, NULL, CAST(0x00009D7C0005F0C2 AS DateTime), NULL, N'Pregnancy')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (708, 139, 2, N'9', 661, NULL, NULL, CAST(0x00009D7C0005F0C2 AS DateTime), NULL, N'Pt./Familyrefused')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (709, 139, 2, N'13', 662, NULL, NULL, CAST(0x00009D7C0005F0C3 AS DateTime), NULL, N'Rapidimprovement')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (710, 139, 2, N'12', 685, NULL, NULL, CAST(0x00009D7C0005F0C4 AS DateTime), NULL, N'Strokeseveritytoomild')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (711, 139, 2, N'1', 686, NULL, NULL, CAST(0x00009D7C0005F0C4 AS DateTime), NULL, N'Strokeseverity–Toosevere(e.g.,NIHSS>22)')
+
+print 'Processed 700 total records'
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (712, 132, 2, N'1', 683, NULL, NULL, CAST(0x00009D7C0005F0D1 AS DateTime), NULL, N'SBP>185orDBP>110mmHgdespitetreatment')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (713, 132, 2, N'2', 684, NULL, NULL, CAST(0x00009D7C0005F0D1 AS DateTime), NULL, N'Seizureatonset')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (714, 132, 2, N'3', 687, NULL, NULL, CAST(0x00009D7C0005F0D2 AS DateTime), NULL, N'Recentsurgery/trauma(<15days)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (715, 132, 2, N'4', 690, NULL, NULL, CAST(0x00009D7C0005F0D2 AS DateTime), NULL, N'Recentintracranialorspinalsurgery,headtrauma,orstroke(<3mo.)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (716, 132, 2, N'5', 691, NULL, NULL, CAST(0x00009D7C0005F0D3 AS DateTime), NULL, N'Historyofintracranialhemorrhageorbrainaneurysmorvascularmalformationorbraintumor')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (717, 132, 2, N'6', 688, NULL, NULL, CAST(0x00009D7C0005F0D4 AS DateTime), NULL, N'Activeinternalbleeding(<22days)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (718, 132, 2, N'7', 689, NULL, NULL, CAST(0x00009D7C0005F0D4 AS DateTime), NULL, N'Platelets<100,000,PTT>40secafterheparinuse,orPT>15orINR>1.7,orknownbleedingdiathesis')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (719, 132, 2, N'8', 676, NULL, NULL, CAST(0x00009D7C0005F0D5 AS DateTime), NULL, N'Suspicionofsubarachnoidhemorrhage')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (720, 132, 2, N'9', 677, NULL, NULL, CAST(0x00009D7C0005F0D7 AS DateTime), NULL, N'CTfindings(ICH,SAH,ormajorinfarctsigns)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (721, 131, 2, N'6', 674, NULL, NULL, CAST(0x00009D7C0005F0E3 AS DateTime), NULL, N'Advancedage')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (722, 131, 2, N'10', 675, NULL, NULL, CAST(0x00009D7C0005F0E4 AS DateTime), NULL, N'Care-teamunabletodetermineeligibility')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (723, 131, 2, N'2', 678, NULL, NULL, CAST(0x00009D7C0005F0E5 AS DateTime), NULL, N'Glucose<50or>400mg/dl')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (724, 131, 2, N'4', 681, NULL, NULL, CAST(0x00009D7C0005F0E5 AS DateTime), NULL, N'Increasedriskofbleedingduetocomorbidconditions(seecodinginstructions)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (725, 131, 2, N'11', 682, NULL, NULL, CAST(0x00009D7C0005F0E6 AS DateTime), NULL, N'IVorIAtPAgivenatoutsidehospital')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (726, 131, 2, N'3', 679, NULL, NULL, CAST(0x00009D7C0005F0E7 AS DateTime), NULL, N'Leftheartthrombus')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (727, 131, 2, N'8', 680, NULL, NULL, CAST(0x00009D7C0005F0E7 AS DateTime), NULL, N'Lifeexpectancy<1yearorsevereco-morbidillnessorCMOonadmission')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (728, 131, 2, N'5', 777, NULL, NULL, CAST(0x00009D7C0005F0E8 AS DateTime), NULL, N'Pregnancy')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (729, 131, 2, N'9', 778, NULL, NULL, CAST(0x00009D7C0005F0E8 AS DateTime), NULL, N'Pt./Familyrefused')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (730, 131, 2, N'13', 775, NULL, NULL, CAST(0x00009D7C0005F0E9 AS DateTime), NULL, N'Rapidimprovement')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (731, 131, 2, N'12', 776, NULL, NULL, CAST(0x00009D7C0005F0EA AS DateTime), NULL, N'Strokeseveritytoomild')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (732, 131, 2, N'1', 779, NULL, NULL, CAST(0x00009D7C0005F0EA AS DateTime), NULL, N'Strokeseverity–Toosevere(e.g.,NIHSS>22)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (733, 133, 2, N'1', 782, NULL, NULL, CAST(0x00009D7C0005F0F8 AS DateTime), NULL, N'Age>80')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (734, 133, 2, N'2', 783, NULL, NULL, CAST(0x00009D7C0005F0F9 AS DateTime), NULL, N'PriorStrokeandDiabetes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (735, 133, 2, N'3', 780, NULL, NULL, CAST(0x00009D7C0005F0F9 AS DateTime), NULL, N'Anyanticoagulantusepriortoadmission(evenifINR<1.7)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (736, 133, 2, N'4', 781, NULL, NULL, CAST(0x00009D7C0005F0FA AS DateTime), NULL, N'NIHSS>25')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (737, 133, 2, N'5', 768, NULL, NULL, CAST(0x00009D7C0005F0FB AS DateTime), NULL, N'CTfindingsof>1/3MCA')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (738, 135, 2, N'6', 769, NULL, NULL, CAST(0x00009D7C0005F107 AS DateTime), NULL, N'DelayinPatientArrival')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (739, 135, 2, N'2', 766, NULL, NULL, CAST(0x00009D7C0005F108 AS DateTime), NULL, N'DelayinStrokediagnosis')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (740, 135, 2, N'3', 767, NULL, NULL, CAST(0x00009D7C0005F109 AS DateTime), NULL, N'InhospitalTimeDelay')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (741, 135, 2, N'4', 770, NULL, NULL, CAST(0x00009D7C0005F109 AS DateTime), NULL, N'NoIVaccess')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (742, 135, 2, N'5', 773, NULL, NULL, CAST(0x00009D7C0005F10A AS DateTime), NULL, N'Other')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (743, 134, 2, N'6', 774, NULL, NULL, CAST(0x00009D7C0005F116 AS DateTime), NULL, N'DelayinPatientArrival')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (744, 134, 2, N'2', 771, NULL, NULL, CAST(0x00009D7C0005F117 AS DateTime), NULL, N'DelayinStrokediagnosis')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (745, 134, 2, N'3', 772, NULL, NULL, CAST(0x00009D7C0005F118 AS DateTime), NULL, N'InhospitalTimeDelay')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (746, 134, 2, N'4', 795, NULL, NULL, CAST(0x00009D7C0005F118 AS DateTime), NULL, N'NoIVaccess')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (747, 134, 2, N'5', 796, NULL, NULL, CAST(0x00009D7C0005F119 AS DateTime), NULL, N'Other')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (748, 87, 2, N'1', 793, NULL, NULL, CAST(0x00009D7C0005F1BF AS DateTime), NULL, N'Symptomaticintracranialhemorrhage<36hours')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (749, 87, 2, N'2', 794, NULL, NULL, CAST(0x00009D7C0005F1BF AS DateTime), NULL, N'Lifethreatening,serioussystemichemorrhage<36hours')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (750, 87, 2, N'5', 797, NULL, NULL, CAST(0x00009D7C0005F1C0 AS DateTime), NULL, N'Otherseriouscomplication')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (751, 87, 2, N'3', 800, NULL, NULL, CAST(0x00009D7C0005F1C0 AS DateTime), NULL, N'Noseriouscomplications')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (752, 87, 2, N'4', 801, NULL, NULL, CAST(0x00009D7C0005F1C1 AS DateTime), NULL, N'UTD')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (753, 36, 2, N'1', 798, NULL, NULL, CAST(0x00009D7C0005F2BF AS DateTime), NULL, N'Antiplatelet')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (754, 36, 2, N'2', 799, NULL, NULL, CAST(0x00009D7C0005F2C0 AS DateTime), NULL, N'Anticoagulant')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (755, 299, 2, N'13', 786, NULL, NULL, CAST(0x00009D7C0005F775 AS DateTime), NULL, N'Allergytoorcomplicationr/taspirin,ticlopidine,clopidogrel,dipyridamoleandwarfarinorheparins(hxorcurrent)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (756, 299, 2, N'4', 787, NULL, NULL, CAST(0x00009D7C0005F776 AS DateTime), NULL, N'Patient/Familyrefused')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (757, 299, 2, N'18', 784, NULL, NULL, CAST(0x00009D7C0005F776 AS DateTime), NULL, N'Riskforbleedingordiscontinuedduetobleeding')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (758, 299, 2, N'21', 785, NULL, NULL, CAST(0x00009D7C0005F777 AS DateTime), NULL, N'Serioussideeffecttomedication')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (759, 299, 2, N'8', 788, NULL, NULL, CAST(0x00009D7C0005F777 AS DateTime), NULL, N'Terminalillness/ComfortMeasuresOnly')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (760, 268, 2, N'13', 791, NULL, NULL, CAST(0x00009D7C0005F7A2 AS DateTime), NULL, N'Allergytoorcomplicationr/twarfarinorheparins(hxorcurrent)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (761, 268, 2, N'3', 792, NULL, NULL, CAST(0x00009D7C0005F7A2 AS DateTime), NULL, N'Mentalstatus')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (762, 268, 2, N'6', 789, NULL, NULL, CAST(0x00009D7C0005F7A3 AS DateTime), NULL, N'Patientrefused')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (763, 268, 2, N'1', 790, NULL, NULL, CAST(0x00009D7C0005F7A5 AS DateTime), NULL, N'Riskforbleedingordiscontinuedduetobleeding')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (764, 268, 2, N'2', 765, NULL, NULL, CAST(0x00009D7C0005F7A6 AS DateTime), NULL, N'Riskforfalls')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (765, 268, 2, N'14', 740, NULL, NULL, CAST(0x00009D7C0005F7A6 AS DateTime), NULL, N'Serioussideeffecttomedication')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (766, 268, 2, N'5', 741, NULL, NULL, CAST(0x00009D7C0005F7A7 AS DateTime), NULL, N'Terminalillness/ComfortMeasuresOnly')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (767, 267, 2, N'1', 738, NULL, NULL, CAST(0x00009D7C0005F7B4 AS DateTime), NULL, N'Noneprescribed/ND')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (768, 267, 2, N'2', 739, NULL, NULL, CAST(0x00009D7C0005F7B4 AS DateTime), NULL, N'None–contraindicated')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (769, 267, 2, N'3', 742, NULL, NULL, CAST(0x00009D7C0005F7B5 AS DateTime), NULL, N'ACEInhibitors')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (770, 267, 2, N'4', 745, NULL, NULL, CAST(0x00009D7C0005F7B5 AS DateTime), NULL, N'ARB')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (771, 267, 2, N'5', 746, NULL, NULL, CAST(0x00009D7C0005F7B6 AS DateTime), NULL, N'BetaBlockers')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (772, 267, 2, N'6', 743, NULL, NULL, CAST(0x00009D7C0005F7B7 AS DateTime), NULL, N'Ca++ChannelBlockers')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (773, 267, 2, N'7', 744, NULL, NULL, CAST(0x00009D7C0005F7B7 AS DateTime), NULL, N'Diuretics')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (774, 267, 2, N'8', 731, NULL, NULL, CAST(0x00009D7C0005F7B8 AS DateTime), NULL, N'Otheranti-hypertensivemed')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (775, 269, 2, N'1', 732, NULL, NULL, CAST(0x00009D7C0005F7C6 AS DateTime), NULL, N'Noneprescribed/ND')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (776, 269, 2, N'2', 729, NULL, NULL, CAST(0x00009D7C0005F7C6 AS DateTime), NULL, N'None–contraindicated')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (777, 269, 2, N'3', 730, NULL, NULL, CAST(0x00009D7C0005F7C7 AS DateTime), NULL, N'Statin')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (778, 269, 2, N'4', 733, NULL, NULL, CAST(0x00009D7C0005F7C8 AS DateTime), NULL, N'Fibrate')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (779, 269, 2, N'6', 736, NULL, NULL, CAST(0x00009D7C0005F7C8 AS DateTime), NULL, N'Othermed')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (780, 269, 2, N'7', 737, NULL, NULL, CAST(0x00009D7C0005F7C9 AS DateTime), NULL, N'Niacin')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (781, 269, 2, N'8', 734, NULL, NULL, CAST(0x00009D7C0005F7C9 AS DateTime), NULL, N'Absorptioninhibitor')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (782, 264, 2, N'1', 735, NULL, NULL, CAST(0x00009D7C0005F80E AS DateTime), NULL, N'HbA1c')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (783, 264, 2, N'2', 758, NULL, NULL, CAST(0x00009D7C0005F80E AS DateTime), NULL, N'FastingBloodSugar')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (784, 264, 2, N'3', 759, NULL, NULL, CAST(0x00009D7C0005F80F AS DateTime), NULL, N'OralGlucoseTolerance')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (785, 264, 2, N'4', 756, NULL, NULL, CAST(0x00009D7C0005F810 AS DateTime), NULL, N'TestOther')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (786, 266, 2, N'1', 757, NULL, NULL, CAST(0x00009D7C0005F81C AS DateTime), NULL, N'Noneprescribed/ND')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (787, 266, 2, N'2', 760, NULL, NULL, CAST(0x00009D7C0005F81D AS DateTime), NULL, N'None–contraindicated')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (788, 266, 2, N'3', 763, NULL, NULL, CAST(0x00009D7C0005F81D AS DateTime), NULL, N'Insulin')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (789, 266, 2, N'4', 764, NULL, NULL, CAST(0x00009D7C0005F81E AS DateTime), NULL, N'Oralagents')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (790, 266, 2, N'5', 761, NULL, NULL, CAST(0x00009D7C0005F81F AS DateTime), NULL, N'Othersubcutaneous/injectableagents')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (791, 181, 2, N'1', 762, NULL, NULL, CAST(0x00009D7C0005FC9A AS DateTime), NULL, N'SubarachnoidHemorrhage')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (792, 181, 2, N'2', 749, NULL, NULL, CAST(0x00009D7C0005FC9B AS DateTime), NULL, N'IntracerebralHemorrhage')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (793, 181, 2, N'3', 750, NULL, NULL, CAST(0x00009D7C0005FC9C AS DateTime), NULL, N'Ischemicstroke')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (794, 181, 2, N'4', 747, NULL, NULL, CAST(0x00009D7C0005FC9C AS DateTime), NULL, N'Transientischemicattack')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (795, 181, 2, N'6', 748, NULL, NULL, CAST(0x00009D7C0005FC9D AS DateTime), NULL, N'Strokenototherwisespecified')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (796, 181, 2, N'8', 751, NULL, NULL, CAST(0x00009D7C0005FC9D AS DateTime), NULL, N'Nostrokerelateddiagnosis')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (797, 192, 2, N'1', 754, NULL, NULL, CAST(0x00009D7C0005FD36 AS DateTime), NULL, N'Patientreceivedrehabilitationservicesduringhospitalization')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (798, 192, 2, N'2', 755, NULL, NULL, CAST(0x00009D7C0005FD37 AS DateTime), NULL, N'Patienttransferredtorehabilitationfacility')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (799, 192, 2, N'3', 752, NULL, NULL, CAST(0x00009D7C0005FD38 AS DateTime), NULL, N'Patientreferredtorehabilitationservicesfollowingdischarge')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (800, 192, 2, N'4', 753, NULL, NULL, CAST(0x00009D7C0005FD38 AS DateTime), NULL, N'Patientineligibletoreceiverehabilitationservices(e.g.,symptomsresolved,poorprognosis,patientunabletotoleraterehabilitationtherapeuticregimen)')
+
+-- end multivalues
+
+
+SET IDENTITY_INSERT [dbo].[AlienValue] OFF
+
+
+
+
+-------------------------------------------------------------------------------------------------------------------------------------
+	EXEC sysVersionGuidCommit;
+	COMMIT TRANSACTION;
+END
+GO
+--) '59507CDE-C8D6-4F86-94DC-4FE153310127'
+
+
+
+
+
+
+
+
+--(
+-- Select the expression below (not including leading -- ) and execute by press F5. Copy result Guid from Messages windows and 
+-- paste it to initialize @versionGuid and @dateMarked of your block. Don't forget change @description
+-- PRINT '''' + CAST(NEWID() as varchar(36)) + '''' + CAST(0x0D0A as varchar(2)) + '''' + CONVERT(varchar(20), GETDATE(), 113) + ''''
+
+DECLARE @ret int;
+EXEC @ret = sysVersionGuidPrepare @versionGuid = 'B4A9121C-2DFA-4BFA-97DD-8511C156A6EF',
+                                  @dateMarked  = '10 Mar 2010 14:47:22',
+                                  @description = 'alexl: populate dictionary';
+GO
+DECLARE @ret int, @options int, @oldNoCountValue bit; 
+BEGIN TRANSACTION;
+EXEC @ret = sysVersionGuidLog; 
+IF (@ret = -1) 	BEGIN ROLLBACK TRANSACTION; SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;	DELETE #VersionGuidTmp; IF @oldNoCountValue = 0 SET NOCOUNT OFF;	END
+ELSE BEGIN
+------------------------------------------------------------------------------------------------------------------------------------
+
+
+
+
+
+
+-------------------------------------------------------------------------------------------------------------------------------------
+	EXEC sysVersionGuidCommit;
+	COMMIT TRANSACTION;
+END
+GO
+--) 'B4A9121C-2DFA-4BFA-97DD-8511C156A6EF'
+
+
+
+
+
+--(
+-- Select the expression below (not including leading -- ) and execute by press F5. Copy result Guid from Messages windows and 
+-- paste it to initialize @versionGuid and @dateMarked of your block. Don't forget change @description
+-- PRINT '''' + CAST(NEWID() as varchar(36)) + '''' + CAST(0x0D0A as varchar(2)) + '''' + CONVERT(varchar(20), GETDATE(), 113) + ''''
+
+DECLARE @ret int;
+EXEC @ret = sysVersionGuidPrepare @versionGuid = 'A1DF5D0A-81D0-47CF-BCC8-9DD7319A45A0',
+                                  @dateMarked  = '17 Mar 2010 16:42:51',
+                                  @description = '[CONTENT]  alexa: convert fields to new correct definition structure';
+GO
+DECLARE @ret int, @options int, @oldNoCountValue bit; 
+BEGIN TRANSACTION;
+EXEC @ret = sysVersionGuidLog; 
+IF (@ret = -1) 	BEGIN ROLLBACK TRANSACTION; SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;	DELETE #VersionGuidTmp; IF @oldNoCountValue = 0 SET NOCOUNT OFF;	END
+ELSE BEGIN
+-------------------------------------------------------------------------------------------
+
+
+
+-------------------------------------------------------------------------------------------
+	EXEC sysVersionGuidCommit;
+	COMMIT TRANSACTION;
+END
+GO
+--) 'A1DF5D0A-81D0-47CF-BCC8-9DD7319A45A0'
+
+
+
+
+
+
+--(
+-- Select the expression below (not including leading -- ) and execute by press F5. Copy result Guid from Messages windows and 
+-- paste it to initialize @versionGuid and @dateMarked of your block. Don't forget change @description
+-- PRINT '''' + CAST(NEWID() as varchar(36)) + '''' + CAST(0x0D0A as varchar(2)) + '''' + CONVERT(varchar(20), GETDATE(), 113) + ''''
+
+DECLARE @ret int;
+EXEC @ret = sysVersionGuidPrepare @versionGuid = '615BB422-E0D0-40B9-BE10-14915D97B5BD',
+                                  @dateMarked  = '17 Mar 2010 16:50:08',
+                                  @description = '[CONTENT]  alexa: convert values to new correct definition structure';
+GO
+DECLARE @ret int, @options int, @oldNoCountValue bit; 
+BEGIN TRANSACTION;
+EXEC @ret = sysVersionGuidLog; 
+IF (@ret = -1) 	BEGIN ROLLBACK TRANSACTION; SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;	DELETE #VersionGuidTmp; IF @oldNoCountValue = 0 SET NOCOUNT OFF;	END
+ELSE BEGIN
+-------------------------------------------------------------------------------------------
+
+
+-------------------------------------------------------------------------------------------
+	EXEC sysVersionGuidCommit;
+	COMMIT TRANSACTION;
+END
+GO
+--) '615BB422-E0D0-40B9-BE10-14915D97B5BD'
+
+
+--(
+-- Select the expression below (not including leading -- ) and execute by press F5. Copy result Guid from Messages windows and 
+-- paste it to initialize @versionGuid and @dateMarked of your block. Don't forget change @description
+-- PRINT '''' + CAST(NEWID() as varchar(36)) + '''' + CAST(0x0D0A as varchar(2)) + '''' + CONVERT(varchar(20), GETDATE(), 113) + ''''
+
+DECLARE @ret int;
+EXEC @ret = sysVersionGuidPrepare @versionGuid = 'BD7E76ED-62FD-49EF-9607-516D9D3F18A2',
+                                  @dateMarked  = '03 Apr 2010 16:52:32',
+                                  @description = '[CONTENT]  alexa: mark EurekaTest and Outcome as existing formats';
+GO
+DECLARE @ret int, @options int, @oldNoCountValue bit; 
+BEGIN TRANSACTION;
+EXEC @ret = sysVersionGuidLog; 
+IF (@ret = -1) 	BEGIN ROLLBACK TRANSACTION; SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;	DELETE #VersionGuidTmp; IF @oldNoCountValue = 0 SET NOCOUNT OFF;	END
+ELSE BEGIN
+-------------------------------------------------------------------------------------------
+UPDATE Format SET [Status]=1 WHERE [Name] IN ('EurekaTest', 'Outcome');
+-------------------------------------------------------------------------------------------
+	EXEC sysVersionGuidCommit;
+	COMMIT TRANSACTION;
+END
+GO
+--) 'BD7E76ED-62FD-49EF-9607-516D9D3F18A2'
+
+
+--(
+-- Select the expression below (not including leading -- ) and execute by press F5. Copy result Guid from Messages windows and 
+-- paste it to initialize @versionGuid and @dateMarked of your block. Don't forget change @description
+-- PRINT '''' + CAST(NEWID() as varchar(36)) + '''' + CAST(0x0D0A as varchar(2)) + '''' + CONVERT(varchar(20), GETDATE(), 113) + ''''
+
+DECLARE @ret int;
+EXEC @ret = sysVersionGuidPrepare @versionGuid = '85DFF3E9-9572-4382-AE41-9C26C4E2A33C',
+                                  @dateMarked  = '23 Apr 2010 15:54:17',
+                                  @description = '[CONTENT]  alexa: remove all facilities of all native formats';
+GO
+DECLARE @ret int, @options int, @oldNoCountValue bit; 
+BEGIN TRANSACTION;
+EXEC @ret = sysVersionGuidLog; 
+IF (@ret = -1) 	BEGIN ROLLBACK TRANSACTION; SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;	DELETE #VersionGuidTmp; IF @oldNoCountValue = 0 SET NOCOUNT OFF;	END
+ELSE BEGIN
+-------------------------------------------------------------------------------------------
+DELETE AuditLog FROM Format INNER JOIN Facility ON Format.ID = Facility.FormatID INNER JOIN UploadLog ON UploadLog.FacilityID = Facility.ID INNER JOIN AuditLog ON AuditLog.UploadLogID = UploadLog.ID WHERE Format.IsNative = 1;
+DELETE UploadLogStrokeData FROM Format INNER JOIN Facility ON Format.ID = Facility.FormatID INNER JOIN UploadLog ON UploadLog.FacilityID = Facility.ID INNER JOIN UploadLogStrokeData ON UploadLogStrokeData.UploadLogID = UploadLog.ID WHERE Format.IsNative = 1;
+DELETE UploadLog FROM Format INNER JOIN Facility ON Format.ID = Facility.FormatID INNER JOIN UploadLog ON UploadLog.FacilityID = Facility.ID WHERE Format.IsNative = 1;
+DELETE Facility FROM Format INNER JOIN Facility ON Format.ID = Facility.FormatID WHERE Format.IsNative = 1;
+-------------------------------------------------------------------------------------------
+	EXEC sysVersionGuidCommit;
+	COMMIT TRANSACTION;
+END
+GO
+--) '85DFF3E9-9572-4382-AE41-9C26C4E2A33C'
+
+
+
+--(
+-- Select the expression below (not including leading -- ) and execute by press F5. Copy result Guid from Messages windows and 
+-- paste it to initialize @versionGuid and @dateMarked of your block. Don't forget change @description
+-- PRINT '''' + CAST(NEWID() as varchar(36)) + '''' + CAST(0x0D0A as varchar(2)) + '''' + CONVERT(varchar(20), GETDATE(), 113) + ''''
+
+DECLARE @ret int;
+EXEC @ret = sysVersionGuidPrepare @versionGuid = '7A30EB07-C316-4CB1-B8F8-61D97BA8A082',
+                                  @dateMarked  = '24 May 2010 23:42:57',
+                                  @description = '[CONTENT]  alexl: add Stanford alien format metadata';
+GO
+DECLARE @ret int, @options int, @oldNoCountValue bit; 
+BEGIN TRANSACTION;
+EXEC @ret = sysVersionGuidLog; 
+IF (@ret = -1) 	BEGIN ROLLBACK TRANSACTION; SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;	DELETE #VersionGuidTmp; IF @oldNoCountValue = 0 SET NOCOUNT OFF;	END
+ELSE BEGIN
+-------------------------------------------------------------------------------------------
+
+
+INSERT INTO Format ([Name], IsNative,KeyFields,[Status]) VALUES ('Stanford', 0,'patient_os_id,jc_admitdate',0);
+
+-- eureka field
+SET IDENTITY_INSERT [dbo].[EurekaField] ON
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [IsNew]) VALUES (350, N'ATRIALFIB', 1, 2, N'Was history of atrial fibrillation/flutter or current finding of atrial fibrillation/flutter documented in the medical record?', 1, NULL, NULL, CAST(0x00009D8001648FAB AS DateTime), CAST(0x00009D8001648FAB AS DateTime), 1)
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [IsNew]) VALUES (351, N'TMLSTKWNWELL', 1, 4, N'At what time was the patient last known to be well or athisor her prior baseline state of health?', 1, NULL, NULL, CAST(0x00009D800164909E AS DateTime), CAST(0x00009D800164909E AS DateTime), 1)
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [IsNew]) VALUES (352, N'DATELASTWELL', 1, 4, N'What was the date at which the patient was last known to be well or athisor her baseline state of health?', 1, NULL, NULL, CAST(0x00009D800164908A AS DateTime), CAST(0x00009D800164908B AS DateTime), 1)
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [IsNew]) VALUES (353, N'ATRIALFIB', 1, 2, N'Was history of atrial fibrillation/flutter or current finding of atrial fibrillation/flutter documented in the medical record?', 1, NULL, NULL, CAST(0x00009D8001648FC1 AS DateTime), CAST(0x00009D8001648FC1 AS DateTime), 1)
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [IsNew]) VALUES (354, N'VTEPOA', 1, 2, N'Was there any documentation by the physician/APN/PA that VTE was diagnosed or suspected on Arrival?', 1, NULL, NULL, CAST(0x00009D8001649432 AS DateTime), CAST(0x00009D8001649432 AS DateTime), 1)
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [IsNew]) VALUES (355, N'IVTHROMTIME', 1, 4, N'What was the time of initiation for IV thrombolytic therapy?', 1, NULL, NULL, CAST(0x00009D800164911F AS DateTime), CAST(0x00009D800164911F AS DateTime), 1)
+INSERT [dbo].[EurekaField] ([ID], [Name], [FormatID], [FieldType], [Description], [IsMandatory], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [IsNew]) VALUES (356, N'IVTHROMDATE', 1, 4, N'What is the date that IV thrombolytic therapy was initiated for this patient at this hospital?', 1, NULL, NULL, CAST(0x00009D800164910B AS DateTime), CAST(0x00009D800164910B AS DateTime), 1)
+SET IDENTITY_INSERT [dbo].[EurekaField] OFF
+
+-- alien field
+SET IDENTITY_INSERT [dbo].[AlienField] ON
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (350, N'jc_otherproceduredate3_utd', 289, 3, NULL, NULL, NULL, CAST(0x00009D8001649AB9 AS DateTime), CAST(0x00009D8001649AB9 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (351, N'jc_otherproceduredate4_utd', 291, 3, NULL, NULL, NULL, CAST(0x00009D8001649AE0 AS DateTime), CAST(0x00009D8001649AE0 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (352, N'jc_otherproceduredate5_utd', 293, 3, NULL, NULL, NULL, CAST(0x00009D8001649B06 AS DateTime), CAST(0x00009D8001649B06 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (353, N'jc_otherproceduredate2_utd', 290, 3, NULL, NULL, NULL, CAST(0x00009D8001649A93 AS DateTime), CAST(0x00009D8001649A93 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (354, N'jc_otherproceduredate4', 59, 3, NULL, NULL, NULL, CAST(0x00009D8001649A1F AS DateTime), CAST(0x00009D8001649A1F AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (355, N'jc_otherproceduredate5', 58, 3, NULL, NULL, NULL, CAST(0x00009D8001649A46 AS DateTime), CAST(0x00009D8001649A46 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (356, N'jc_otherproceduredate1_utd', 174, 3, NULL, NULL, NULL, CAST(0x00009D8001649A6B AS DateTime), CAST(0x00009D8001649A6B AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (357, N'STATINRXDS', 269, 3, NULL, NULL, NULL, CAST(0x00009D8001649C34 AS DateTime), CAST(0x00009D8001649C34 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (358, N'RSNNORXSTATIN', 271, 3, NULL, NULL, NULL, CAST(0x00009D8001649C86 AS DateTime), CAST(0x00009D8001649C86 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (359, N'EVIDATHERO', 270, 3, NULL, NULL, NULL, CAST(0x00009D8001649CBA AS DateTime), CAST(0x00009D8001649CBA AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (360, N'RSNNORXCOAG', 268, 3, NULL, NULL, NULL, CAST(0x00009D8001649BDF AS DateTime), CAST(0x00009D8001649BDF AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (361, N'ANTITHROMRXDC', 284, 3, NULL, NULL, NULL, CAST(0x00009D8001649B2C AS DateTime), CAST(0x00009D8001649B2D AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (362, N'ANTICOAGRXDIS', 286, 3, NULL, NULL, NULL, CAST(0x00009D8001649B65 AS DateTime), CAST(0x00009D8001649B65 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (363, N'RSNNORXTHROM', 299, 3, NULL, NULL, NULL, CAST(0x00009D8001649B98 AS DateTime), CAST(0x00009D8001649B99 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (364, N'PRINPXDATE', 47, 3, NULL, NULL, NULL, CAST(0x00009D800164989E AS DateTime), CAST(0x00009D800164989E AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (365, N'jc_princproced_dtutd', 54, 3, NULL, NULL, NULL, CAST(0x00009D80016498C5 AS DateTime), CAST(0x00009D80016498C5 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (366, N'OTHRPX#', 61, 3, NULL, NULL, NULL, CAST(0x00009D80016498EB AS DateTime), CAST(0x00009D80016498EB AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (367, N'PRINPX', 48, 3, NULL, NULL, NULL, CAST(0x00009D8001649877 AS DateTime), CAST(0x00009D8001649877 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (368, N'jc_otherdiagnosis15', 45, 3, NULL, NULL, NULL, CAST(0x00009D8001649803 AS DateTime), CAST(0x00009D8001649803 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (369, N'jc_otherdiagnosis16', 44, 3, NULL, NULL, NULL, CAST(0x00009D800164982A AS DateTime), CAST(0x00009D800164982A AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (370, N'jc_otherdiagnosis17', 46, 3, NULL, NULL, NULL, CAST(0x00009D8001649850 AS DateTime), CAST(0x00009D8001649850 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (371, N'OTHRPX#DT', 56, 3, NULL, NULL, NULL, CAST(0x00009D80016499AC AS DateTime), CAST(0x00009D80016499AC AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (372, N'jc_otherproceduredate2', 55, 3, NULL, NULL, NULL, CAST(0x00009D80016499D1 AS DateTime), CAST(0x00009D80016499D1 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (373, N'jc_otherproceduredate3', 57, 3, NULL, NULL, NULL, CAST(0x00009D80016499F8 AS DateTime), CAST(0x00009D80016499F8 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (374, N'jc_otherprocedure5', 63, 3, NULL, NULL, NULL, CAST(0x00009D8001649984 AS DateTime), CAST(0x00009D8001649984 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (375, N'jc_otherprocedure2', 60, 3, NULL, NULL, NULL, CAST(0x00009D8001649912 AS DateTime), CAST(0x00009D8001649912 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (376, N'jc_otherprocedure3', 62, 3, NULL, NULL, NULL, CAST(0x00009D8001649938 AS DateTime), CAST(0x00009D8001649938 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (377, N'jc_otherprocedure4', 64, 3, NULL, NULL, NULL, CAST(0x00009D800164995F AS DateTime), CAST(0x00009D800164995F AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (378, N'ADSMKCOUNS', 265, 3, NULL, NULL, NULL, CAST(0x00009D8001649CED AS DateTime), CAST(0x00009D8001649CED AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (379, N'ANTITHROMADM', 338, 3, NULL, NULL, NULL, CAST(0x00009D800164A08F AS DateTime), CAST(0x00009D800164A08F AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (380, N'RSNNOANTITHRM', 340, 3, NULL, NULL, NULL, CAST(0x00009D800164A0C3 AS DateTime), CAST(0x00009D800164A0C3 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (381, N'LDLCMEASURED', 342, 3, NULL, NULL, NULL, CAST(0x00009D800164A0F7 AS DateTime), CAST(0x00009D800164A0F7 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (382, N'CONTRAVTEPRO', 339, 3, NULL, NULL, NULL, CAST(0x00009D800164A05D AS DateTime), CAST(0x00009D800164A05D AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (383, N'LSTKNWELL', 337, 3, NULL, NULL, NULL, CAST(0x00009D8001649FC5 AS DateTime), CAST(0x00009D8001649FC5 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (384, N'IVTPAADMIN', 347, 3, NULL, NULL, NULL, CAST(0x00009D8001649FF8 AS DateTime), CAST(0x00009D8001649FF8 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (385, N'RSNNOIVTHROM', 346, 3, NULL, NULL, NULL, CAST(0x00009D800164A02A AS DateTime), CAST(0x00009D800164A02A AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (386, N'ANTICOAGRXDIS', 312, 3, NULL, NULL, NULL, CAST(0x00009D800164A1E9 AS DateTime), CAST(0x00009D800164A1E9 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (387, N'RSNNORXCOAG', 314, 3, NULL, NULL, NULL, CAST(0x00009D800164A21D AS DateTime), CAST(0x00009D800164A21D AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (388, N'STATINRXDS', 313, 3, NULL, NULL, NULL, CAST(0x00009D800164A24F AS DateTime), CAST(0x00009D800164A24F AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (389, N'RSNNORXTHROM', 310, 3, NULL, NULL, NULL, CAST(0x00009D800164A1B6 AS DateTime), CAST(0x00009D800164A1B6 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (390, N'LDLC', 341, 3, NULL, NULL, NULL, CAST(0x00009D800164A128 AS DateTime), CAST(0x00009D800164A128 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (391, N'jc_discdatetime', 326, 3, NULL, NULL, NULL, CAST(0x00009D800164A15C AS DateTime), CAST(0x00009D800164A15C AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (392, N'ANTITHROMRXDC', 311, 3, NULL, NULL, NULL, CAST(0x00009D800164A183 AS DateTime), CAST(0x00009D800164A184 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (393, N'EDADMEDRXDS', 275, 3, NULL, NULL, NULL, CAST(0x00009D8001649DF6 AS DateTime), CAST(0x00009D8001649DF6 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (394, N'ASSESSREHAB', 277, 3, NULL, NULL, NULL, CAST(0x00009D8001649E29 AS DateTime), CAST(0x00009D8001649E29 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (395, N'SAMPLE', 333, 3, NULL, NULL, NULL, CAST(0x00009D8001649E5E AS DateTime), CAST(0x00009D8001649E5E AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (396, N'EDADFUAFTDC', 273, 3, NULL, NULL, NULL, CAST(0x00009D8001649DC3 AS DateTime), CAST(0x00009D8001649DC3 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (397, N'EDADRSKSTK', 282, 3, NULL, NULL, NULL, CAST(0x00009D8001649D28 AS DateTime), CAST(0x00009D8001649D29 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (398, N'EDADSGNSTK', 281, 3, NULL, NULL, NULL, CAST(0x00009D8001649D5E AS DateTime), CAST(0x00009D8001649D5E AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (399, N'EDADACTEMS', 274, 3, NULL, NULL, NULL, CAST(0x00009D8001649D90 AS DateTime), CAST(0x00009D8001649D90 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (400, N'jc_hic', 327, 3, NULL, NULL, NULL, CAST(0x00009D8001649F36 AS DateTime), CAST(0x00009D8001649F36 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (401, N'ATRIALFIB', 331, 3, NULL, NULL, NULL, CAST(0x00009D8001649F5D AS DateTime), CAST(0x00009D8001649F5D AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (402, N'PRARLIPIDAGT', 330, 3, NULL, NULL, NULL, CAST(0x00009D8001649F92 AS DateTime), CAST(0x00009D8001649F92 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (403, N'PMTSRCE', 328, 3, NULL, NULL, NULL, CAST(0x00009D8001649F03 AS DateTime), CAST(0x00009D8001649F03 AS DateTime))
+
+print 'Processed 400 total records'
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (404, N'inonefield10', 334, 3, NULL, NULL, NULL, CAST(0x00009D8001649E89 AS DateTime), CAST(0x00009D8001649E89 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (405, N'jc_zip2', 336, 3, NULL, NULL, NULL, CAST(0x00009D8001649EB3 AS DateTime), CAST(0x00009D8001649EB3 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (406, N'jc_homeless', 335, 3, NULL, NULL, NULL, CAST(0x00009D8001649EDB AS DateTime), CAST(0x00009D8001649EDB AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (407, N'jc_otherdiagnosis14', 52, 3, NULL, NULL, NULL, CAST(0x00009D80016497DD AS DateTime), CAST(0x00009D80016497DD AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (408, N'gs_lastknownwell', 170, 3, NULL, NULL, NULL, CAST(0x00009D8001649074 AS DateTime), CAST(0x00009D8001649074 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (409, N'IVTHROMINIT', 167, 3, NULL, NULL, NULL, CAST(0x00009D80016490C4 AS DateTime), CAST(0x00009D80016490C4 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (410, N'jc_ivthrodttm', 152, 3, NULL, NULL, NULL, CAST(0x00009D80016490F6 AS DateTime), CAST(0x00009D80016490F6 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (411, N'ASPRN24HRS', 153, 3, NULL, NULL, NULL, CAST(0x00009D8001649044 AS DateTime), CAST(0x00009D8001649044 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (412, N'possiblymappable', 109, 3, NULL, NULL, NULL, CAST(0x00009D8001648F51 AS DateTime), CAST(0x00009D8001648F51 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (413, N'gs_med_hist', 94, 3, NULL, NULL, NULL, CAST(0x00009D8001648F96 AS DateTime), CAST(0x00009D8001648F97 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (414, N'gs_stroketype', 97, 3, NULL, NULL, NULL, CAST(0x00009D8001648FF6 AS DateTime), CAST(0x00009D8001648FF6 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (415, N'gs_dysphagia', 30, 3, NULL, NULL, NULL, CAST(0x00009D8001649212 AS DateTime), CAST(0x00009D8001649212 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (416, N'gs_prophylaxis_2ndday', 23, 3, NULL, NULL, NULL, CAST(0x00009D800164924A AS DateTime), CAST(0x00009D800164924A AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (417, N'VTEPROPH', 25, 3, NULL, NULL, NULL, CAST(0x00009D8001649289 AS DateTime), CAST(0x00009D8001649289 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (418, N'COMFORTMX', 145, 3, NULL, NULL, NULL, CAST(0x00009D80016491D1 AS DateTime), CAST(0x00009D80016491D1 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (419, N'gs_ivtpaoutside', 147, 3, NULL, NULL, NULL, CAST(0x00009D8001649146 AS DateTime), CAST(0x00009D8001649146 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (420, N'Separatedatabase???', 149, 3, NULL, NULL, NULL, CAST(0x00009D8001649178 AS DateTime), CAST(0x00009D8001649178 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (421, N'gs_iatpadatetime', 151, 3, NULL, NULL, NULL, CAST(0x00009D80016491AB AS DateTime), CAST(0x00009D80016491AB AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (422, N'gs_patientarrival', 111, 3, NULL, NULL, NULL, CAST(0x00009D8001648D57 AS DateTime), CAST(0x00009D8001648D57 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (423, N'jc_edpatient', 110, 3, NULL, NULL, NULL, CAST(0x00009D8001648D98 AS DateTime), CAST(0x00009D8001648D98 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (424, N'jc_arrdatetime', 113, 3, NULL, NULL, NULL, CAST(0x00009D8001648DCA AS DateTime), CAST(0x00009D8001648DCA AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (425, N'gs_jp_admitsource', 119, 3, NULL, NULL, NULL, CAST(0x00009D8001648CE0 AS DateTime), CAST(0x00009D8001648CE0 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (426, N'patient_os_id', 116, 3, NULL, NULL, NULL, CAST(0x00009D8001648C2F AS DateTime), CAST(0x00009D8001648C30 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (427, N'jc_clinical', 115, 3, NULL, NULL, NULL, CAST(0x00009D8001648C59 AS DateTime), CAST(0x00009D8001648C59 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (428, N'jc_carotid', 117, 3, NULL, NULL, NULL, CAST(0x00009D8001648CA9 AS DateTime), CAST(0x00009D8001648CA9 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (429, N'jc_gender', 121, 3, NULL, NULL, NULL, CAST(0x00009D8001648E92 AS DateTime), CAST(0x00009D8001648E92 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (430, N'sp_ethnic', 123, 3, NULL, NULL, NULL, CAST(0x00009D8001648ECA AS DateTime), CAST(0x00009D8001648ECA AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (431, N'gs_race', 125, 3, NULL, NULL, NULL, CAST(0x00009D8001648EFF AS DateTime), CAST(0x00009D8001648EFF AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (432, N'gs_age', 122, 3, NULL, NULL, NULL, CAST(0x00009D8001648E69 AS DateTime), CAST(0x00009D8001648E69 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (433, N'jc_admitdate', 127, 3, NULL, NULL, NULL, CAST(0x00009D8001648DF3 AS DateTime), CAST(0x00009D8001648DF3 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (434, N'jc_providernpi', 130, 3, NULL, NULL, NULL, CAST(0x00009D8001648E19 AS DateTime), CAST(0x00009D8001648E19 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (435, N'jc_dob', 129, 3, NULL, NULL, NULL, CAST(0x00009D8001648E40 AS DateTime), CAST(0x00009D8001648E40 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (436, N'jc_otherdiagnosis4', 78, 3, NULL, NULL, NULL, CAST(0x00009D8001649655 AS DateTime), CAST(0x00009D8001649655 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (437, N'jc_otherdiagnosis5', 77, 3, NULL, NULL, NULL, CAST(0x00009D800164967D AS DateTime), CAST(0x00009D800164967D AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (438, N'jc_otherdiagnosis6', 79, 3, NULL, NULL, NULL, CAST(0x00009D80016496A6 AS DateTime), CAST(0x00009D80016496A6 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (439, N'jc_otherdiagnosis3', 85, 3, NULL, NULL, NULL, CAST(0x00009D800164962D AS DateTime), CAST(0x00009D800164962D AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (440, N'OTHRDX#', 82, 3, NULL, NULL, NULL, CAST(0x00009D80016495B8 AS DateTime), CAST(0x00009D80016495B8 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (441, N'jc_otherdiagnosis1', 84, 3, NULL, NULL, NULL, CAST(0x00009D80016495DE AS DateTime), CAST(0x00009D80016495DE AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (442, N'jc_otherdiagnosis2', 86, 3, NULL, NULL, NULL, CAST(0x00009D8001649604 AS DateTime), CAST(0x00009D8001649604 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (443, N'jc_otherdiagnosis11', 49, 3, NULL, NULL, NULL, CAST(0x00009D800164976A AS DateTime), CAST(0x00009D800164976A AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (444, N'jc_otherdiagnosis12', 51, 3, NULL, NULL, NULL, CAST(0x00009D8001649790 AS DateTime), CAST(0x00009D8001649790 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (445, N'jc_otherdiagnosis13', 53, 3, NULL, NULL, NULL, CAST(0x00009D80016497B6 AS DateTime), CAST(0x00009D80016497B6 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (446, N'jc_otherdiagnosis10', 50, 3, NULL, NULL, NULL, CAST(0x00009D8001649744 AS DateTime), CAST(0x00009D8001649744 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (447, N'jc_otherdiagnosis7', 81, 3, NULL, NULL, NULL, CAST(0x00009D80016496CE AS DateTime), CAST(0x00009D80016496CE AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (448, N'jc_otherdiagnosis8', 80, 3, NULL, NULL, NULL, CAST(0x00009D80016496F7 AS DateTime), CAST(0x00009D80016496F7 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (449, N'jc_otherdiagnosis9', 65, 3, NULL, NULL, NULL, CAST(0x00009D800164971C AS DateTime), CAST(0x00009D800164971C AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (450, N'jc_vteprophylaxis6', 39, 3, NULL, NULL, NULL, CAST(0x00009D8001649372 AS DateTime), CAST(0x00009D8001649372 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (451, N'jc_vteprophylaxis8', 41, 3, NULL, NULL, NULL, CAST(0x00009D800164939E AS DateTime), CAST(0x00009D800164939E AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (452, N'jc_vteprophylaxis7', 43, 3, NULL, NULL, NULL, CAST(0x00009D80016493CA AS DateTime), CAST(0x00009D80016493CA AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (453, N'jc_vteprophylaxis5', 40, 3, NULL, NULL, NULL, CAST(0x00009D8001649345 AS DateTime), CAST(0x00009D8001649345 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (454, N'jc_vteprophylaxis2', 27, 3, NULL, NULL, NULL, CAST(0x00009D80016492BF AS DateTime), CAST(0x00009D80016492BF AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (455, N'jc_vteprophylaxis3', 26, 3, NULL, NULL, NULL, CAST(0x00009D80016492EB AS DateTime), CAST(0x00009D80016492EB AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (456, N'jc_vteprophylaxis4', 33, 3, NULL, NULL, NULL, CAST(0x00009D8001649317 AS DateTime), CAST(0x00009D8001649317 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (457, N'INHOLDLTVALU', 7, 3, NULL, NULL, NULL, CAST(0x00009D80016494C7 AS DateTime), CAST(0x00009D80016494C7 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (458, N'DISCHGSTAT', 66, 3, NULL, NULL, NULL, CAST(0x00009D80016494ED AS DateTime), CAST(0x00009D80016494ED AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (459, N'PRINDX', 185, 3, NULL, NULL, NULL, CAST(0x00009D8001649591 AS DateTime), CAST(0x00009D8001649591 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (460, N'PARANTICOAGAD', 36, 3, NULL, NULL, NULL, CAST(0x00009D8001649494 AS DateTime), CAST(0x00009D8001649494 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (461, N'VTEPROPHDATE', 42, 3, NULL, NULL, NULL, CAST(0x00009D80016493F8 AS DateTime), CAST(0x00009D80016493F8 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (462, N'VTECONFIRMED', 35, 3, NULL, NULL, NULL, CAST(0x00009D800164941F AS DateTime), CAST(0x00009D800164941F AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (463, N'ANTITHROMADM', 34, 3, NULL, NULL, NULL, CAST(0x00009D800164945C AS DateTime), CAST(0x00009D800164945C AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (464, N'DATELASTWELL', 352, 3, NULL, NULL, NULL, CAST(0x00009D800164908B AS DateTime), CAST(0x00009D800164908B AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (465, N'TMLSTKWNWELL', 351, 3, NULL, NULL, NULL, CAST(0x00009D800164909E AS DateTime), CAST(0x00009D800164909E AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (466, N'ATRIALFIB', 350, 3, NULL, NULL, NULL, CAST(0x00009D8001648FAB AS DateTime), CAST(0x00009D8001648FAB AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (467, N'ATRIALFIB', 353, 3, NULL, NULL, NULL, CAST(0x00009D8001648FC1 AS DateTime), CAST(0x00009D8001648FC1 AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (468, N'IVTHROMDATE', 356, 3, NULL, NULL, NULL, CAST(0x00009D800164910B AS DateTime), CAST(0x00009D800164910B AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (469, N'IVTHROMTIME', 355, 3, NULL, NULL, NULL, CAST(0x00009D800164911F AS DateTime), CAST(0x00009D800164911F AS DateTime))
+INSERT [dbo].[AlienField] ([ID], [Name], [EurekaFieldID], [FormatID], [RegularExpression], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate]) VALUES (470, N'VTEPOA', 354, 3, NULL, NULL, NULL, CAST(0x00009D8001649432 AS DateTime), CAST(0x00009D8001649432 AS DateTime))
+SET IDENTITY_INSERT [dbo].[AlienField] OFF
+
+-- alien value
+SET IDENTITY_INSERT [dbo].[AlienValue] ON
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (801, 269, 3, N'1', 732, NULL, NULL, CAST(0x00009D8001649C3B AS DateTime), NULL, N'Noneprescribed/ND')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (802, 268, 3, N'5', 741, NULL, NULL, CAST(0x00009D8001649C0C AS DateTime), NULL, N'Terminal illness/Comfort Measures Only')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (803, 269, 3, N'2', 729, NULL, NULL, CAST(0x00009D8001649C41 AS DateTime), NULL, N'None–contraindicated')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (804, 269, 3, N'4', 733, NULL, NULL, CAST(0x00009D8001649C4D AS DateTime), NULL, N'Fibrate')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (805, 269, 3, N'3', 730, NULL, NULL, CAST(0x00009D8001649C47 AS DateTime), NULL, N'Statin')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (806, 268, 3, N'6', 789, NULL, NULL, CAST(0x00009D8001649BF4 AS DateTime), NULL, N'Patient refused')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (807, 268, 3, N'3', 792, NULL, NULL, CAST(0x00009D8001649BED AS DateTime), NULL, N'Mental status')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (808, 268, 3, N'1', 790, NULL, NULL, CAST(0x00009D8001649BFA AS DateTime), NULL, N'Risk for bleeding or discontinued due to bleeding')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (809, 268, 3, N'14', 740, NULL, NULL, CAST(0x00009D8001649C06 AS DateTime), NULL, N'Serious side effect to medication')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (810, 268, 3, N'2', 765, NULL, NULL, CAST(0x00009D8001649C00 AS DateTime), NULL, N'Risk for falls')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (811, 269, 3, N'6', 736, NULL, NULL, CAST(0x00009D8001649C53 AS DateTime), NULL, N'Othermed')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (812, 265, 3, N'1', 410, NULL, NULL, CAST(0x00009D8001649CF5 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (813, 270, 3, N'2', 422, NULL, NULL, CAST(0x00009D8001649CC6 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (814, 265, 3, N'2', 409, NULL, NULL, CAST(0x00009D8001649CFB AS DateTime), NULL, N'No/ND')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (815, 282, 3, N'1', 434, NULL, NULL, CAST(0x00009D8001649D2F AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (816, 265, 3, N'3', 405, NULL, NULL, CAST(0x00009D8001649D02 AS DateTime), NULL, N'NC')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (817, 269, 3, N'8', 734, NULL, NULL, CAST(0x00009D8001649C5F AS DateTime), NULL, N'Absorption inhibitor')
+
+print 'Processed 800 total records'
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (818, 269, 3, N'7', 737, NULL, NULL, CAST(0x00009D8001649C59 AS DateTime), NULL, N'Niacin')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (819, 271, 3, N'1', 424, NULL, NULL, CAST(0x00009D8001649C8C AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (820, 270, 3, N'1', 420, NULL, NULL, CAST(0x00009D8001649CC0 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (821, 271, 3, N'2', 423, NULL, NULL, CAST(0x00009D8001649C92 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (822, 268, 3, N'13', 791, NULL, NULL, CAST(0x00009D8001649BE7 AS DateTime), NULL, N'Allergy to or complication r/t warfarin or heparins (hxorcurrent)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (823, 66, 3, N'63', 259, NULL, NULL, CAST(0x00009D800164954A AS DateTime), NULL, N'63')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (824, 66, 3, N'62', 261, NULL, NULL, CAST(0x00009D8001649544 AS DateTime), NULL, N'62')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (825, 66, 3, N'64', 257, NULL, NULL, CAST(0x00009D8001649550 AS DateTime), NULL, N'64')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (826, 66, 3, N'66', 265, NULL, NULL, CAST(0x00009D800164955D AS DateTime), NULL, N'66')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (827, 66, 3, N'65', 258, NULL, NULL, CAST(0x00009D8001649556 AS DateTime), NULL, N'65')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (828, 66, 3, N'43', 274, NULL, NULL, CAST(0x00009D800164952B AS DateTime), NULL, N'43')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (829, 66, 3, N'21', 276, NULL, NULL, CAST(0x00009D8001649525 AS DateTime), NULL, N'21')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (830, 66, 3, N'50', 272, NULL, NULL, CAST(0x00009D8001649531 AS DateTime), NULL, N'50')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (831, 66, 3, N'61', 260, NULL, NULL, CAST(0x00009D800164953E AS DateTime), NULL, N'61')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (832, 66, 3, N'51', 273, NULL, NULL, CAST(0x00009D8001649537 AS DateTime), NULL, N'51')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (833, 66, 3, N'70', 266, NULL, NULL, CAST(0x00009D8001649563 AS DateTime), NULL, N'70')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (834, 299, 3, N'4', 787, NULL, NULL, CAST(0x00009D8001649BA6 AS DateTime), NULL, N'Patient/Family refused')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (835, 299, 3, N'13', 786, NULL, NULL, CAST(0x00009D8001649BA0 AS DateTime), NULL, N'Allergy to or complication r/t aspirin,ticlopidine,clopidogrel,dipyridamole and warfarin or heparins (hxorcurrent)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (836, 299, 3, N'18', 784, NULL, NULL, CAST(0x00009D8001649BAD AS DateTime), NULL, N'Risk for bleeding or discontinued due to bleeding')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (837, 299, 3, N'8', 788, NULL, NULL, CAST(0x00009D8001649BB8 AS DateTime), NULL, N'Terminal illness/Comfort Measures Only')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (838, 299, 3, N'21', 785, NULL, NULL, CAST(0x00009D8001649BB2 AS DateTime), NULL, N'Serious side effect to medication')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (839, 284, 3, N'2', 380, NULL, NULL, CAST(0x00009D8001649B39 AS DateTime), NULL, N'No/ND')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (840, 284, 3, N'1', 297, NULL, NULL, CAST(0x00009D8001649B34 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (841, 284, 3, N'3', 585, NULL, NULL, CAST(0x00009D8001649B3F AS DateTime), NULL, N'NC')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (842, 286, 3, N'2', 567, NULL, NULL, CAST(0x00009D8001649B72 AS DateTime), NULL, N'Anticoagulant')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (843, 286, 3, N'1', 574, NULL, NULL, CAST(0x00009D8001649B6C AS DateTime), NULL, N'Antiplatelet')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (844, 340, 3, N'2', 178, NULL, NULL, CAST(0x00009D800164A0CF AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (845, 340, 3, N'1', 185, NULL, NULL, CAST(0x00009D800164A0C9 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (846, 342, 3, N'1', 193, NULL, NULL, CAST(0x00009D800164A0FD AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (847, 341, 3, N'1', 181, NULL, NULL, CAST(0x00009D800164A12F AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (848, 342, 3, N'2', 192, NULL, NULL, CAST(0x00009D800164A103 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (849, 339, 3, N'1', 207, NULL, NULL, CAST(0x00009D800164A063 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (850, 346, 3, N'2', 189, NULL, NULL, CAST(0x00009D800164A036 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (851, 339, 3, N'2', 183, NULL, NULL, CAST(0x00009D800164A069 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (852, 338, 3, N'2', 216, NULL, NULL, CAST(0x00009D800164A09D AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (853, 338, 3, N'1', 212, NULL, NULL, CAST(0x00009D800164A097 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (854, 341, 3, N'2', 180, NULL, NULL, CAST(0x00009D800164A135 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (855, 314, 3, N'1', 231, NULL, NULL, CAST(0x00009D800164A223 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (856, 312, 3, N'2', 233, NULL, NULL, CAST(0x00009D800164A1F5 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (857, 314, 3, N'2', 230, NULL, NULL, CAST(0x00009D800164A228 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (858, 313, 3, N'2', 228, NULL, NULL, CAST(0x00009D800164A25B AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (859, 313, 3, N'1', 232, NULL, NULL, CAST(0x00009D800164A255 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (860, 311, 3, N'2', 255, NULL, NULL, CAST(0x00009D800164A18F AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (861, 311, 3, N'1', 240, NULL, NULL, CAST(0x00009D800164A18A AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (862, 310, 3, N'1', 49, NULL, NULL, CAST(0x00009D800164A1BC AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (863, 312, 3, N'1', 218, NULL, NULL, CAST(0x00009D800164A1F0 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (864, 310, 3, N'2', 20, NULL, NULL, CAST(0x00009D800164A1C3 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (865, 346, 3, N'1', 187, NULL, NULL, CAST(0x00009D800164A030 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (866, 273, 3, N'2', 418, NULL, NULL, CAST(0x00009D8001649DCF AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (867, 273, 3, N'1', 419, NULL, NULL, CAST(0x00009D8001649DC9 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (868, 275, 3, N'1', 387, NULL, NULL, CAST(0x00009D8001649DFC AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (869, 277, 3, N'1', 394, NULL, NULL, CAST(0x00009D8001649E2F AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (870, 275, 3, N'2', 386, NULL, NULL, CAST(0x00009D8001649E02 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (871, 281, 3, N'1', 433, NULL, NULL, CAST(0x00009D8001649D64 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (872, 282, 3, N'2', 427, NULL, NULL, CAST(0x00009D8001649D36 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (873, 281, 3, N'2', 435, NULL, NULL, CAST(0x00009D8001649D6A AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (874, 274, 3, N'2', 388, NULL, NULL, CAST(0x00009D8001649D9C AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (875, 274, 3, N'1', 389, NULL, NULL, CAST(0x00009D8001649D96 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (876, 277, 3, N'2', 397, NULL, NULL, CAST(0x00009D8001649E35 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (877, 337, 3, N'1', 203, NULL, NULL, CAST(0x00009D8001649FCC AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (878, 330, 3, N'2', 167, NULL, NULL, CAST(0x00009D8001649F9E AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (879, 337, 3, N'2', 205, NULL, NULL, CAST(0x00009D8001649FD1 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (880, 347, 3, N'2', 190, NULL, NULL, CAST(0x00009D800164A004 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (881, 347, 3, N'1', 191, NULL, NULL, CAST(0x00009D8001649FFE AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (882, 328, 3, N'2', 166, NULL, NULL, CAST(0x00009D8001649F0F AS DateTime), NULL, N'Source of payment is Non-Medicare')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (883, 328, 3, N'1', 164, NULL, NULL, CAST(0x00009D8001649F0A AS DateTime), NULL, N'Source of payment is Medicare')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (884, 331, 3, N'1', 169, NULL, NULL, CAST(0x00009D8001649F64 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (885, 330, 3, N'1', 168, NULL, NULL, CAST(0x00009D8001649F99 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (886, 331, 3, N'2', 170, NULL, NULL, CAST(0x00009D8001649F6A AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (887, 123, 3, N'2', 67, NULL, NULL, CAST(0x00009D8001648ED7 AS DateTime), NULL, N'No/UTD')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (888, 123, 3, N'1', 66, NULL, NULL, CAST(0x00009D8001648ED1 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (889, 125, 3, N'1', 707, NULL, NULL, CAST(0x00009D8001648F05 AS DateTime), NULL, N'White')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (890, 125, 3, N'3', 695, NULL, NULL, CAST(0x00009D8001648F11 AS DateTime), NULL, N'Asian')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (891, 125, 3, N'2', 708, NULL, NULL, CAST(0x00009D8001648F0B AS DateTime), NULL, N'Black or African American')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (892, 110, 3, N'N', 14, NULL, NULL, CAST(0x00009D8001648DA4 AS DateTime), NULL, N'')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (893, 110, 3, N'Y', 17, NULL, NULL, CAST(0x00009D8001648D9E AS DateTime), NULL, N'')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (894, 121, 3, N'1', 125, NULL, NULL, CAST(0x00009D8001648E99 AS DateTime), NULL, N'Male')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (895, 121, 3, N'3', 121, NULL, NULL, CAST(0x00009D8001648EA4 AS DateTime), NULL, N'Unknown')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (896, 121, 3, N'2', 123, NULL, NULL, CAST(0x00009D8001648E9F AS DateTime), NULL, N'Female')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (897, 125, 3, N'4', 696, NULL, NULL, CAST(0x00009D8001648F17 AS DateTime), NULL, N'American Indian/Alaska Native')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (898, 109, 3, N'3', 699, NULL, NULL, CAST(0x00009D8001648F6B AS DateTime), NULL, N'Self Pay/No Insurance')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (899, 109, 3, N'2', 698, NULL, NULL, CAST(0x00009D8001648F64 AS DateTime), NULL, N'Private/VA/Champus/Other Insurance')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (900, 109, 3, N'4', 722, NULL, NULL, CAST(0x00009D8001648F70 AS DateTime), NULL, N'ND')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (901, 97, 3, N'3', 250, NULL, NULL, CAST(0x00009D8001649003 AS DateTime), NULL, N'Transient Ischemic Attack (< 24 hours)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (902, 97, 3, N'2', 223, NULL, NULL, CAST(0x00009D8001648FFD AS DateTime), NULL, N'Ischemic stroke')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (903, 125, 3, N'6', 694, NULL, NULL, CAST(0x00009D8001648F23 AS DateTime), NULL, N'UTD')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (904, 125, 3, N'5', 693, NULL, NULL, CAST(0x00009D8001648F1D AS DateTime), NULL, N'NativeHawaiian/PacificIslander')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (905, 125, 3, N'7', 697, NULL, NULL, CAST(0x00009D8001648F29 AS DateTime), NULL, N'Other')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (906, 109, 3, N'5', 701, NULL, NULL, CAST(0x00009D8001648F5D AS DateTime), NULL, N'Medicaid')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (907, 109, 3, N'1', 700, NULL, NULL, CAST(0x00009D8001648F57 AS DateTime), NULL, N'Medicare')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (908, 119, 3, N'7', 129, NULL, NULL, CAST(0x00009D8001648CF2 AS DateTime), NULL, N'7 EmergencyRoom')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (909, 119, 3, N'8', 115, NULL, NULL, CAST(0x00009D8001648CEC AS DateTime), NULL, N'8 Court/Law Enforcement')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (910, 119, 3, N'1', 130, NULL, NULL, CAST(0x00009D8001648CFA AS DateTime), NULL, N'1 Non-Health Care Facility Point of Origin')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (911, 119, 3, N'5', 126, NULL, NULL, CAST(0x00009D8001648D07 AS DateTime), NULL, N'5 Transfer from a Skilled Nursing Facility( SNF)or Intermediate Care Facility(ICF)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (912, 119, 3, N'4', 128, NULL, NULL, CAST(0x00009D8001648D01 AS DateTime), NULL, N'4 Transfer From a Hospital (Different Facility)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (913, 115, 3, N'N', 114, NULL, NULL, CAST(0x00009D8001648C83 AS DateTime), NULL, N'')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (914, 115, 3, N'Y', 113, NULL, NULL, CAST(0x00009D8001648C7B AS DateTime), NULL, N'')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (915, 117, 3, N'Y', 111, NULL, NULL, CAST(0x00009D8001648CB2 AS DateTime), NULL, N'')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (916, 119, 3, N'2', 100, NULL, NULL, CAST(0x00009D8001648CE6 AS DateTime), NULL, N'2Clinic')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (917, 117, 3, N'N', 98, NULL, NULL, CAST(0x00009D8001648CB9 AS DateTime), NULL, N'')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (918, 119, 3, N'E', 127, NULL, NULL, CAST(0x00009D8001648D0D AS DateTime), NULL, N'E Transfer from Ambulatory Surgery Center')
+
+print 'Processed 900 total records'
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (919, 111, 3, N'1', 19, NULL, NULL, CAST(0x00009D8001648D5F AS DateTime), NULL, N'EMS')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (920, 119, 3, N'13', 119, NULL, NULL, CAST(0x00009D8001648D32 AS DateTime), NULL, N'Transfer from a critical access hospital')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (921, 111, 3, N'2', 8, NULL, NULL, CAST(0x00009D8001648D65 AS DateTime), NULL, N'Private transport/taxi/other from home/scene')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (922, 111, 3, N'2', 6, NULL, NULL, CAST(0x00009D8001648D71 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (923, 111, 3, N'3', 9, NULL, NULL, CAST(0x00009D8001648D6B AS DateTime), NULL, N'Transfer from other hospital')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (924, 119, 3, N'F', 135, NULL, NULL, CAST(0x00009D8001648D1A AS DateTime), NULL, N'FTransfer from Hospice and is Under a Hospice Plan of Care or Enrolled in a Hospice Program')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (925, 119, 3, N'6', 134, NULL, NULL, CAST(0x00009D8001648D13 AS DateTime), NULL, N'6 Transfer from another Health Care Facility')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (926, 119, 3, N'D', 133, NULL, NULL, CAST(0x00009D8001648D1F AS DateTime), NULL, N'D Transfer from One Distinct Unit of the Hospital to another Distinct Unit of the Same Hospital Resulting in a Separate Claim to the Payer')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (927, 119, 3, N'12', 132, NULL, NULL, CAST(0x00009D8001648D2C AS DateTime), NULL, N'HMO referral')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (928, 119, 3, N'9', 131, NULL, NULL, CAST(0x00009D8001648D26 AS DateTime), NULL, N'9 Information not Available')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (929, 97, 3, N'4', 251, NULL, NULL, CAST(0x00009D8001649009 AS DateTime), NULL, N'Subarachnoid Hemorrhage               ')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (930, 41, 3, N'1', 143, NULL, NULL, CAST(0x00009D80016493A4 AS DateTime), NULL, N'Checked')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (931, 39, 3, N'1', 145, NULL, NULL, CAST(0x00009D8001649378 AS DateTime), NULL, N'Checked')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (932, 43, 3, N'1', 171, NULL, NULL, CAST(0x00009D80016493D1 AS DateTime), NULL, N'Checked')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (933, 34, 3, N'N', 152, NULL, NULL, CAST(0x00009D8001649469 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (934, 34, 3, N'Y', 154, NULL, NULL, CAST(0x00009D8001649463 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (935, 27, 3, N'1', 214, NULL, NULL, CAST(0x00009D80016492C6 AS DateTime), NULL, N'Checked')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (936, 25, 3, N'1', 208, NULL, NULL, CAST(0x00009D8001649296 AS DateTime), NULL, N'Checked')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (937, 26, 3, N'1', 215, NULL, NULL, CAST(0x00009D80016492F1 AS DateTime), NULL, N'Checked')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (938, 40, 3, N'1', 144, NULL, NULL, CAST(0x00009D800164934C AS DateTime), NULL, N'Checked')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (939, 33, 3, N'1', 156, NULL, NULL, CAST(0x00009D800164931E AS DateTime), NULL, N'Checked')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (940, 34, 3, N'5', 153, NULL, NULL, CAST(0x00009D800164946F AS DateTime), NULL, N'NC')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (941, 66, 3, N'5', 269, NULL, NULL, CAST(0x00009D800164950C AS DateTime), NULL, N'5')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (942, 66, 3, N'4', 271, NULL, NULL, CAST(0x00009D8001649505 AS DateTime), NULL, N'4')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (943, 66, 3, N'6', 267, NULL, NULL, CAST(0x00009D8001649512 AS DateTime), NULL, N'6')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (944, 66, 3, N'20', 275, NULL, NULL, CAST(0x00009D800164951F AS DateTime), NULL, N'20')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (945, 66, 3, N'7', 268, NULL, NULL, CAST(0x00009D8001649519 AS DateTime), NULL, N'7')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (946, 36, 3, N'2', 799, NULL, NULL, CAST(0x00009D80016494A1 AS DateTime), NULL, N'Anticoagulant')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (947, 36, 3, N'1', 798, NULL, NULL, CAST(0x00009D800164949B AS DateTime), NULL, N'Antiplatelet')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (948, 66, 3, N'1', 162, NULL, NULL, CAST(0x00009D80016494F3 AS DateTime), NULL, N'1')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (949, 66, 3, N'3', 270, NULL, NULL, CAST(0x00009D80016494FF AS DateTime), NULL, N'3')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (950, 66, 3, N'2', 163, NULL, NULL, CAST(0x00009D80016494F9 AS DateTime), NULL, N'2')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (951, 167, 3, N'N', 473, NULL, NULL, CAST(0x00009D80016490D1 AS DateTime), NULL, N'')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (952, 167, 3, N'Y', 472, NULL, NULL, CAST(0x00009D80016490CB AS DateTime), NULL, N'')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (953, 147, 3, N'1', 79, NULL, NULL, CAST(0x00009D800164914C AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (954, 149, 3, N'1', 527, NULL, NULL, CAST(0x00009D8001649180 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (955, 147, 3, N'2', 80, NULL, NULL, CAST(0x00009D8001649152 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (956, 97, 3, N'6', 247, NULL, NULL, CAST(0x00009D8001649016 AS DateTime), NULL, N'Stroke not otherwise specified')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (957, 97, 3, N'5', 249, NULL, NULL, CAST(0x00009D8001649010 AS DateTime), NULL, N'Intracerebral Hemorrhage')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (958, 97, 3, N'7', 248, NULL, NULL, CAST(0x00009D800164901C AS DateTime), NULL, N'No stroke related diagnosis')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (959, 153, 3, N'2', 515, NULL, NULL, CAST(0x00009D8001649050 AS DateTime), NULL, N'No/ND')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (960, 153, 3, N'1', 522, NULL, NULL, CAST(0x00009D800164904A AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (961, 149, 3, N'2', 525, NULL, NULL, CAST(0x00009D8001649185 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (962, 30, 3, N'3', 202, NULL, NULL, CAST(0x00009D8001649225 AS DateTime), NULL, N'NC')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (963, 30, 3, N'2', 204, NULL, NULL, CAST(0x00009D800164921F AS DateTime), NULL, N'No/ND')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (964, 23, 3, N'1', 186, NULL, NULL, CAST(0x00009D8001649253 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (965, 23, 3, N'3', 182, NULL, NULL, CAST(0x00009D800164925E AS DateTime), NULL, N'No with reason')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (966, 23, 3, N'2', 184, NULL, NULL, CAST(0x00009D8001649258 AS DateTime), NULL, N'No')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (967, 145, 3, N'2', 74, NULL, NULL, CAST(0x00009D80016491DD AS DateTime), NULL, N'two or more days after arrival day(Day2+)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (968, 145, 3, N'1', 76, NULL, NULL, CAST(0x00009D80016491D8 AS DateTime), NULL, N'the day of arrival (Day0) or day after arrival(Day1)')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (969, 145, 3, N'3', 75, NULL, NULL, CAST(0x00009D80016491E3 AS DateTime), NULL, N'Timing unclear')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (970, 30, 3, N'1', 206, NULL, NULL, CAST(0x00009D8001649219 AS DateTime), NULL, N'Yes')
+INSERT [dbo].[AlienValue] ([ID], [EurekaFieldID], [FormatID], [Value], [EurekaValueID], [CreatedBy], [LastModifiedBy], [CreatedDate], [LastModifiedDate], [Description]) VALUES (971, 145, 3, N'4', 82, NULL, NULL, CAST(0x00009D80016491E9 AS DateTime), NULL, N'Not Documented/UTD')
+SET IDENTITY_INSERT [dbo].[AlienValue] OFF
+
+
+
+
+-------------------------------------------------------------------------------------------
+	EXEC sysVersionGuidCommit;
+	COMMIT TRANSACTION;
+END
+GO
+--) '7A30EB07-C316-4CB1-B8F8-61D97BA8A082'
+
+  
+GO  
+ 

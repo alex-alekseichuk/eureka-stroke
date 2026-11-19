@@ -1,0 +1,32 @@
+SET XACT_ABORT ON; IF (OBJECT_ID('tempdb..#VersionGuidTmp') IS NULL) CREATE TABLE #VersionGuidTmp ([Guid] uniqueidentifier NOT NULL,[dateMarked] datetime NOT NULL,[description] varchar(255) NOT NULL,[isError] bit NOT NULL DEFAULT 0)
+GO
+-- This line should be at the beginning of each Content AutoChangesGuid script
+
+--(
+-- Select the expression below (not including leading -- ) and execute by press F5. Copy result Guid from Messages windows and 
+-- paste it to initialize @versionGuid and @dateMarked of your block. Don't forget change @description
+-- PRINT '''' + CAST(NEWID() as varchar(36)) + '''' + CAST(0x0D0A as varchar(2)) + '''' + CONVERT(varchar(20), GETDATE(), 113) + ''''
+
+DECLARE @ret int;
+EXEC @ret = sysVersionGuidPrepare @versionGuid = '06A13003-CE08-43E0-A0F6-134D77AF6A34',
+                                  @dateMarked  = '10 Dec 2009 14:26:31',
+                                  @description = '[CONTENT]  alexa: added Quote text block';
+GO
+DECLARE @ret int, @options int, @oldNoCountValue bit; 
+BEGIN TRANSACTION;
+EXEC @ret = sysVersionGuidLog; 
+IF (@ret = -1) 	BEGIN ROLLBACK TRANSACTION; SELECT @options = @@OPTIONS; IF ( (512 & @options) = 512) SET @oldNoCountValue = 1 ELSE SET NOCOUNT ON;	DELETE #VersionGuidTmp; IF @oldNoCountValue = 0 SET NOCOUNT OFF;	END
+ELSE BEGIN
+-------------------------------------------------------------------------------------------
+	IF NOT EXISTS(SELECT * FROM Block WHERE [name] = 'Quote')
+		INSERT INTO Block ([name], [text], isText) VALUES ('Quote', 'Provide some Promo text here!', 1);
+-------------------------------------------------------------------------------------------
+	EXEC sysVersionGuidCommit;
+	COMMIT TRANSACTION;
+END
+GO
+--) 06A13003-CE08-43E0-A0F6-134D77AF6A34
+
+
+
+
